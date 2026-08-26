@@ -68,19 +68,22 @@ exports.updateAppointmentStatus = async (req, res) => {
   }
 };
 
-// Tableau de bord
+
+// Tableau de bord Summary
 exports.getDashboardSummary = async (req, res) => {
   try {
+    // 1. حساب المستخدمين وحالاتهم بحسب الأدوار
     const [userCounts] = await db.query(`
       SELECT 
         COUNT(*) as totalUsers,
         SUM(CASE WHEN role = 'RECEPTION' THEN 1 ELSE 0 END) as receptionCount,
         SUM(CASE WHEN role = 'TECHNICIAN' THEN 1 ELSE 0 END) as techCount,
         SUM(CASE WHEN role = 'ADMIN' THEN 1 ELSE 0 END) as adminCount
-      FROM users WHERE is_active = TRUE
+      FROM users 
+      WHERE is_active = TRUE OR is_active IS NULL
     `);
 
-
+    // 2. إحصائيات الإيرادات
     const [revenueData] = await db.query(`
       SELECT 
         DATE_FORMAT(appointment_date, '%Y-%m-%d') as date,
@@ -92,6 +95,7 @@ exports.getDashboardSummary = async (req, res) => {
       ORDER BY date ASC
     `);
 
+    // 3. أنواع الفحوصات
     const [inspectionTypes] = await db.query(`
       SELECT 
         COALESCE(service_type, 'Non Spécifié') as label,
@@ -100,27 +104,10 @@ exports.getDashboardSummary = async (req, res) => {
       GROUP BY service_type
     `);
 
-    const [recentTickets] = await db.query(`
-      SELECT 
-        a.id AS ticket_number,
-        c.full_name AS client_name,
-        CONCAT(v.make, ' ', v.model) AS vehicle_name,
-        COALESCE(a.service_type, 'Non Spécifié') AS inspection_type,
-        a.status,
-        a.total_amount,
-        a.appointment_date
-      FROM appointments a
-      LEFT JOIN clients c ON a.client_id = c.id
-      LEFT JOIN vehicules v ON a.vehicle_id = v.id
-      ORDER BY a.appointment_date DESC
-      LIMIT 5
-    `);
-
     res.json({
       users: userCounts[0] || { totalUsers: 0, receptionCount: 0, techCount: 0, adminCount: 0 },
       revenue: revenueData || [],
-      inspectionTypes: inspectionTypes || [],
-      recentTickets: recentTickets || []
+      inspectionTypes: inspectionTypes || []
     });
   } catch (error) {
     console.error('Dashboard Error:', error);

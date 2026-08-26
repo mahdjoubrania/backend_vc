@@ -95,3 +95,49 @@ exports.deleteUser = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+// Tableau de bord Summary
+exports.getDashboardSummary = async (req, res) => {
+  try {
+    // 1. حساب المستخدمين وحالاتهم بحسب الأدوار
+    const [userCounts] = await db.query(`
+      SELECT 
+        COUNT(*) as totalUsers,
+        SUM(CASE WHEN role = 'RECEPTION' THEN 1 ELSE 0 END) as receptionCount,
+        SUM(CASE WHEN role = 'TECHNICIAN' THEN 1 ELSE 0 END) as techCount,
+        SUM(CASE WHEN role = 'ADMIN' THEN 1 ELSE 0 END) as adminCount
+      FROM users 
+      WHERE is_active = TRUE OR is_active IS NULL
+    `);
+
+    // 2. إحصائيات الإيرادات
+    const [revenueData] = await db.query(`
+      SELECT 
+        DATE_FORMAT(appointment_date, '%Y-%m-%d') as date,
+        MONTH(appointment_date) as month,
+        SUM(total_amount) as total_prix,
+        SUM(versement) as total_versement
+      FROM appointments
+      GROUP BY DATE(appointment_date), MONTH(appointment_date)
+      ORDER BY date ASC
+    `);
+
+    // 3. أنواع الفحوصات
+    const [inspectionTypes] = await db.query(`
+      SELECT 
+        COALESCE(service_type, 'Non Spécifié') as label,
+        COUNT(*) as count
+      FROM appointments
+      GROUP BY service_type
+    `);
+
+    res.json({
+      users: userCounts[0] || { totalUsers: 0, receptionCount: 0, techCount: 0, adminCount: 0 },
+      revenue: revenueData || [],
+      inspectionTypes: inspectionTypes || []
+    });
+  } catch (error) {
+    console.error('Dashboard Error:', error);
+    res.status(500).json({ message: 'Erreur serveur lors de la récupération des données.' });
+  }
+};
