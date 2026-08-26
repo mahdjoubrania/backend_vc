@@ -48,17 +48,18 @@ exports.login = async (req, res) => {
 
     delete user.password_hash;
 
+
     const token = jwt.sign(
-      {
-        id: user.id,
-        phone: user.phone,
-        role: user.role
-      },
-      process.env.JWT_SECRET,
-      {
-        expiresIn: '8h'
-      }
-    );
+  {
+    id: user.id,
+    phone: user.phone,
+    role: user.role
+  },
+  process.env.JWT_SECRET || 'fallback_secret_key_change_in_production',
+  {
+    expiresIn: '8h'
+  }
+);
 
     res.json({
       message: 'Connexion réussie.',
