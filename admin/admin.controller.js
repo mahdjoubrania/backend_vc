@@ -1,3 +1,4 @@
+
 const db = require('../config/db');
 const bcrypt = require('bcryptjs');
 
@@ -9,6 +10,7 @@ exports.getAllUsers = async (req, res) => {
     );
     res.json(users);
   } catch (error) {
+    console.error('Error in getAllUsers:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -33,7 +35,7 @@ exports.createUser = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, salt);
 
     const [result] = await db.query(
-      'INSERT INTO users (full_name, phone, role, password_hash) VALUES (?, ?, ?, ?)',
+      'INSERT INTO users (full_name, phone, role, password_hash, is_active) VALUES (?, ?, ?, ?, 1)',
       [fullName, phone, role, hashedPassword]
     );
 
@@ -42,6 +44,7 @@ exports.createUser = async (req, res) => {
       userId: result.insertId
     });
   } catch (error) {
+    console.error('Error in createUser:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -52,22 +55,41 @@ exports.updateUserRole = async (req, res) => {
   const { fullName, phone, role, password, isActive } = req.body;
 
   try {
-    let hashedPassword = null;
-    if (password) {
+    let query = 'UPDATE users SET ';
+    const queryParams = [];
+
+    if (fullName !== undefined && fullName !== null) {
+      query += 'full_name = ?, ';
+      queryParams.push(fullName);
+    }
+    if (phone !== undefined && phone !== null) {
+      query += 'phone = ?, ';
+      queryParams.push(phone);
+    }
+    if (role !== undefined && role !== null) {
+      query += 'role = ?, ';
+      queryParams.push(role);
+    }
+    if (isActive !== undefined && isActive !== null) {
+      query += 'is_active = ?, ';
+      queryParams.push(isActive ? 1 : 0);
+    }
+    if (password && password.trim() !== '') {
       const salt = await bcrypt.genSalt(10);
-      hashedPassword = await bcrypt.hash(password, salt);
+      const hashedPassword = await bcrypt.hash(password, salt);
+      query += 'password_hash = ?, ';
+      queryParams.push(hashedPassword);
     }
 
-    const [result] = await db.query(
-      `UPDATE users SET 
-        full_name = COALESCE(?, full_name),
-        phone = COALESCE(?, phone),
-        role = COALESCE(?, role),
-        password_hash = COALESCE(?, password_hash),
-        is_active = COALESCE(?, is_active)
-      WHERE id = ?`,
-      [fullName || null, phone || null, role || null, hashedPassword, isActive !== undefined ? isActive : null, userId]
-    );
+    // إزالة الفاصلة الأخيرة إذا تم تعديل أي حقل
+    if (queryParams.length === 0) {
+      return res.status(400).json({ message: 'Aucune donnée fournie pour la mise à jour.' });
+    }
+
+    query = query.slice(0, -2) + ' WHERE id = ?';
+    queryParams.push(userId);
+
+    const [result] = await db.query(query, queryParams);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: 'Utilisateur introuvable.' });
@@ -75,6 +97,7 @@ exports.updateUserRole = async (req, res) => {
 
     res.json({ message: 'Modifications enregistrées avec succès.' });
   } catch (error) {
+    console.error('Error in updateUserRole:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -92,6 +115,7 @@ exports.deleteUser = async (req, res) => {
 
     res.json({ message: 'Compte utilisateur désactivé avec succès.' });
   } catch (error) {
+    console.error('Error in deleteUser:', error);
     res.status(500).json({ message: error.message });
   }
 };

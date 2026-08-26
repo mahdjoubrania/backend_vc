@@ -31,15 +31,15 @@ exports.getRdvAnalytics = async (req, res) => {
     }
 
     const [dailyTrend] = await db.query(`
-      SELECT 
-        DATE_FORMAT(appointment_date, '%Y-%m-%d') as date,
-        SUM(CASE WHEN status = 'NO_SHOW' THEN 1 ELSE 0 END) as no_show_count,
-        SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) as canceled_count
-      FROM appointments
-      ${whereClause}
-      GROUP BY DATE(appointment_date)
-      ORDER BY date ASC
-    `, queryParams);
+  SELECT 
+    DATE_FORMAT(appointment_date, '%Y-%m-%d') as date,
+    COALESCE(SUM(CASE WHEN status IN ('NO_SHOW', 'ABSENT') THEN 1 ELSE 0 END), 0) as no_show_count,
+    COALESCE(SUM(CASE WHEN status IN ('CANCELLED', 'CANCELED', 'ANNULE') THEN 1 ELSE 0 END), 0) as canceled_count
+  FROM appointments
+  ${whereClause}
+  GROUP BY DATE_FORMAT(appointment_date, '%Y-%m-%d')
+  ORDER BY date ASC
+`, queryParams);
 
     const result = statusCounts[0] || { noShow: 0, canceled: 0, incomplete: 0, completed: 0 };
 
@@ -85,15 +85,16 @@ exports.getDashboardSummary = async (req, res) => {
 
     // 2. إحصائيات الإيرادات
     const [revenueData] = await db.query(`
-      SELECT 
-        DATE_FORMAT(appointment_date, '%Y-%m-%d') as date,
-        MONTH(appointment_date) as month,
-        SUM(total_amount) as total_prix,
-        SUM(versement) as total_versement
-      FROM appointments
-      GROUP BY DATE(appointment_date), MONTH(appointment_date)
-      ORDER BY date ASC
-    `);
+  SELECT 
+    DATE_FORMAT(appointment_date, '%Y-%m-%d') as date,
+    MONTH(appointment_date) as month,
+    COALESCE(SUM(total_amount), 0) as total_prix,
+    COALESCE(SUM(versement), 0) as total_versement
+  FROM appointments
+  WHERE appointment_date IS NOT NULL
+  GROUP BY DATE_FORMAT(appointment_date, '%Y-%m-%d'), MONTH(appointment_date)
+  ORDER BY date ASC
+`);
 
     // 3. أنواع الفحوصات
     const [inspectionTypes] = await db.query(`
