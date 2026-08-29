@@ -1,17 +1,15 @@
 const db = require('../config/db');
-const bcrypt = require('bcryptjs');
 
-// Récupérer les statistiques analytiques des RDV
-// Récupérer les statistiques analytiques des RDV
+// 1. إحصائيات وتتبعات المواعد (Analytics)
 exports.getRdvAnalytics = async (req, res) => {
   try {
     const { period = '15days', startDate, endDate } = req.query;
 
     const [statusCounts] = await db.query(`
       SELECT 
-        SUM(CASE WHEN status = 'NO_SHOW' THEN 1 ELSE 0 END) as noShow,
-        SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) as canceled,
-        SUM(CASE WHEN status = 'INCOMPLETE' THEN 1 ELSE 0 END) as incomplete,
+        SUM(CASE WHEN status IN ('NO_SHOW', 'ABSENT') THEN 1 ELSE 0 END) as noShow,
+        SUM(CASE WHEN status IN ('CANCELLED', 'CANCELED', 'ANNULE') THEN 1 ELSE 0 END) as canceled,
+        SUM(CASE WHEN status = 'IN_PROGRESS' THEN 1 ELSE 0 END) as incomplete,
         SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed
       FROM appointments
     `);
@@ -31,15 +29,15 @@ exports.getRdvAnalytics = async (req, res) => {
     }
 
     const [dailyTrend] = await db.query(`
-  SELECT 
-    DATE_FORMAT(appointment_date, '%Y-%m-%d') as date,
-    COALESCE(SUM(CASE WHEN status IN ('NO_SHOW', 'ABSENT') THEN 1 ELSE 0 END), 0) as no_show_count,
-    COALESCE(SUM(CASE WHEN status IN ('CANCELLED', 'CANCELED', 'ANNULE') THEN 1 ELSE 0 END), 0) as canceled_count
-  FROM appointments
-  ${whereClause}
-  GROUP BY DATE_FORMAT(appointment_date, '%Y-%m-%d')
-  ORDER BY date ASC
-`, queryParams);
+      SELECT 
+        DATE_FORMAT(appointment_date, '%Y-%m-%d') as date,
+        COALESCE(SUM(CASE WHEN status IN ('NO_SHOW', 'ABSENT') THEN 1 ELSE 0 END), 0) as no_show_count,
+        COALESCE(SUM(CASE WHEN status IN ('CANCELLED', 'CANCELED', 'ANNULE') THEN 1 ELSE 0 END), 0) as canceled_count
+      FROM appointments
+      ${whereClause}
+      GROUP BY DATE_FORMAT(appointment_date, '%Y-%m-%d')
+      ORDER BY date ASC
+    `, queryParams);
 
     const result = statusCounts[0] || { noShow: 0, canceled: 0, incomplete: 0, completed: 0 };
 
@@ -56,23 +54,9 @@ exports.getRdvAnalytics = async (req, res) => {
   }
 };
 
-// Mettre à jour le statut du RDV
-exports.updateAppointmentStatus = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-    await db.query(`UPDATE appointments SET status = ? WHERE id = ?`, [status, id]);
-    res.json({ message: 'Statut mis à jour avec succès' });
-  } catch (error) {
-    res.status(500).json({ message: 'Erreur lors de la mise à jour' });
-  }
-};
-
-
-// Tableau de bord Summary
+// 2. ملخص لوحة التحكم (Dashboard Summary)
 exports.getDashboardSummary = async (req, res) => {
   try {
-    // 1. حساب المستخدمين وحالاتهم بحسب الأدوار
     const [userCounts] = await db.query(`
       SELECT 
         COUNT(*) as totalUsers,
@@ -83,20 +67,18 @@ exports.getDashboardSummary = async (req, res) => {
       WHERE is_active = TRUE OR is_active IS NULL
     `);
 
-    // 2. إحصائيات الإيرادات
     const [revenueData] = await db.query(`
-  SELECT 
-    DATE_FORMAT(appointment_date, '%Y-%m-%d') as date,
-    MONTH(appointment_date) as month,
-    COALESCE(SUM(total_amount), 0) as total_prix,
-    COALESCE(SUM(versement), 0) as total_versement
-  FROM appointments
-  WHERE appointment_date IS NOT NULL
-  GROUP BY DATE_FORMAT(appointment_date, '%Y-%m-%d'), MONTH(appointment_date)
-  ORDER BY date ASC
-`);
+      SELECT 
+        DATE_FORMAT(appointment_date, '%Y-%m-%d') as date,
+        MONTH(appointment_date) as month,
+        COALESCE(SUM(total_amount), 0) as total_prix,
+        COALESCE(SUM(versement), 0) as total_versement
+      FROM appointments
+      WHERE appointment_date IS NOT NULL
+      GROUP BY DATE_FORMAT(appointment_date, '%Y-%m-%d'), MONTH(appointment_date)
+      ORDER BY date ASC
+    `);
 
-    // 3. أنواع الفحوصات
     const [inspectionTypes] = await db.query(`
       SELECT 
         COALESCE(service_type, 'Non Spécifié') as label,
@@ -116,7 +98,74 @@ exports.getDashboardSummary = async (req, res) => {
   }
 };
 
-// Créer un nouveau RDV 
+// 3. جلب مواعيد اليوم فقط (اليوم الحالي)
+exports.getTodayAppointments = async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT 
+        a.id,
+        c.full_name AS client_name,
+        a.tlf AS phone,
+        COALESCE(NULLIF(TRIM(CONCAT(COALESCE(v.make,''), ' ', COALESCE(v.model,''))), ''), 'Non Spécifié') AS vehicle_name,
+        COALESCE(v.license_plate, a.VIN, 'Non Spécifié') AS license_plate,
+        a.VIN,
+        COALESCE(a.service_type, 'Inspection') AS service_type,
+        a.appointment_date,
+        a.status,
+        a.cancel_reason,
+        a.started_at,
+        a.completed_at,
+        COALESCE(a.payment_status, 'PENDING_VERSEMENT') AS payment_status,
+        COALESCE(a.total_amount, 0) AS total_amount,
+        COALESCE(a.versement, 0) AS versement
+      FROM appointments a
+      LEFT JOIN clients c ON a.client_id = c.id
+      LEFT JOIN vehicules v ON a.vehicle_id = v.id
+      WHERE DATE(a.appointment_date) = CURDATE()
+      ORDER BY a.appointment_date ASC
+    `);
+
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching today appointments:', error);
+    res.status(500).json({ message: 'Erreur lors de la récupération des RDV du jour' });
+  }
+};
+
+// 4. جلب كافة المواعيد (تاريخ تنازلي)
+exports.getAppointments = async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT 
+        a.id,
+        c.full_name AS client_name,
+        a.tlf AS phone,
+        COALESCE(NULLIF(TRIM(CONCAT(COALESCE(v.make,''), ' ', COALESCE(v.model,''))), ''), 'Non Spécifié') AS vehicle_name,
+        COALESCE(v.license_plate, a.VIN, 'Non Spécifié') AS license_plate,
+        a.VIN,
+        COALESCE(a.service_type, 'Inspection') AS service_type,
+        a.appointment_date,
+        a.status,
+        a.cancel_reason,
+        a.started_at,
+        a.completed_at,
+        COALESCE(a.payment_status, 'PENDING_VERSEMENT') AS payment_status,
+        COALESCE(a.total_amount, 0) AS total_amount,
+        COALESCE(a.versement, 0) AS versement
+      FROM appointments a
+      LEFT JOIN clients c ON a.client_id = c.id
+      LEFT JOIN vehicules v ON a.vehicle_id = v.id
+      ORDER BY a.appointment_date DESC
+    `);
+
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching appointments:', error);
+    res.status(500).json({ message: 'Erreur lors de la récupération des RDV' });
+  }
+};
+
+// 5. إنشاء موعد جديد
 exports.createAppointment = async (req, res) => {
   try {
     const { 
@@ -177,7 +226,7 @@ exports.createAppointment = async (req, res) => {
         appointmentDate, 
         totalAmount || 0, 
         versement || 0, 
-        paymentStatus || 'UNPAID', 
+        paymentStatus || 'PENDING_VERSEMENT', 
         status || 'PENDING',
         typedeverification || ''
       ]
@@ -196,37 +245,38 @@ exports.createAppointment = async (req, res) => {
   }
 };
 
-exports.getAppointments = async (req, res) => {
+// 6. تحديث حالة الموعد والكرونو وسبب الإلغاء
+exports.updateAppointmentStatus = async (req, res) => {
   try {
-    const [rows] = await db.query(`
-      SELECT 
-        a.id,
-        c.full_name AS client_name,
-        a.tlf AS phone,
-        COALESCE(NULLIF(TRIM(CONCAT(COALESCE(v.make,''), ' ', COALESCE(v.model,''))), ''), 'Non Spécifié') AS vehicle_name,
-        COALESCE(v.license_plate, a.VIN, 'Non Spécifié') AS license_plate,
-        a.VIN,
-        COALESCE(a.service_type, 'Inspection') AS service_type,
-        a.appointment_date,
-        a.status,
-        COALESCE(a.payment_status, 'UNPAID') AS payment_status,
-        COALESCE(a.total_amount, 0) AS total_amount,
-        COALESCE(a.versement, 0) AS versement
-      FROM appointments a
-      LEFT JOIN clients c ON a.client_id = c.id
-      LEFT JOIN vehicules v ON a.vehicle_id = v.id
-      ORDER BY a.appointment_date DESC
-    `);
+    const { id } = req.params;
+    const { status, cancel_reason } = req.body;
 
-    res.json(rows);
+    let query = `UPDATE appointments SET status = ?`;
+    let queryParams = [status];
+
+    if (['IN_PROGRESS', 'IN_WORKSHOP'].includes(status)) {
+      query += `, started_at = COALESCE(started_at, NOW())`;
+    } else if (status === 'COMPLETED') {
+      query += `, completed_at = NOW()`;
+    }
+
+    if (cancel_reason) {
+      query += `, cancel_reason = ?`;
+      queryParams.push(cancel_reason);
+    }
+
+    query += ` WHERE id = ?`;
+    queryParams.push(id);
+
+    await db.query(query, queryParams);
+    res.json({ message: 'Statut mis à jour avec succès' });
   } catch (error) {
-    console.error('Error fetching appointments:', error);
-    res.status(500).json({ message: 'Erreur lors de la récupération des RDV' });
+    console.error('Update status error:', error);
+    res.status(500).json({ message: 'Erreur lors de la mise à jour' });
   }
 };
 
-
-// Mettre à jour le statut de paiement
+// 7. تحديث حالة الدفع
 exports.updatePaymentStatus = async (req, res) => {
   try {
     const { id } = req.params;
@@ -234,11 +284,43 @@ exports.updatePaymentStatus = async (req, res) => {
     await db.query(`UPDATE appointments SET payment_status = ? WHERE id = ?`, [payment_status, id]);
     res.json({ message: 'Statut de paiement mis à jour' });
   } catch (error) {
-    res.status(500).json({ message: 'Erreur lors de la mise à jour' });
+    res.status(500).json({ message: 'Erreur lors de la mise à jour du paiement' });
   }
 };
 
-// Récupérer tous les RDV annulés et absents (Sans restriction de date)
+// 8. تعديل بيانات الموعد بالكامل
+exports.updateAppointment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { clientName, phone, vin, serviceType, totalAmount, versement } = req.body;
+
+    await db.query(
+      `UPDATE appointments SET 
+        tlf = ?, 
+        VIN = ?, 
+        service_type = ?, 
+        total_amount = ?, 
+        versement = ? 
+       WHERE id = ?`,
+      [phone, vin, serviceType, totalAmount, versement, id]
+    );
+
+    await db.query(
+      `UPDATE clients c 
+       JOIN appointments a ON a.client_id = c.id 
+       SET c.full_name = ? 
+       WHERE a.id = ?`,
+      [clientName, id]
+    );
+
+    res.json({ message: 'Rendez-vous mis à jour avec succès' });
+  } catch (error) {
+    console.error('Update appointment error:', error);
+    res.status(500).json({ message: 'Erreur lors de la modification' });
+  }
+};
+
+// 9. جلب المواعيد الملغاة والغائبة
 exports.getCancelledAppointments = async (req, res) => {
   try {
     const [rows] = await db.query(`
@@ -250,7 +332,8 @@ exports.getCancelledAppointments = async (req, res) => {
         a.VIN,
         COALESCE(a.service_type, 'Inspection') AS service_type,
         a.appointment_date,
-        a.status
+        a.status,
+        a.cancel_reason
       FROM appointments a
       LEFT JOIN clients c ON a.client_id = c.id
       LEFT JOIN vehicules v ON a.vehicle_id = v.id
