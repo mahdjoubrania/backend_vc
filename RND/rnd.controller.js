@@ -98,7 +98,7 @@ exports.getDashboardSummary = async (req, res) => {
   }
 };
 
-// 3. جلب مواعيد اليوم فقط (اليوم الحالي)
+// 3. جلب مواعيد اليوم فقط (اليوم الحالي حسب التوقيت المحلي)
 exports.getTodayAppointments = async (req, res) => {
   try {
     const [rows] = await db.query(`
@@ -121,7 +121,7 @@ exports.getTodayAppointments = async (req, res) => {
       FROM appointments a
       LEFT JOIN clients c ON a.client_id = c.id
       LEFT JOIN vehicules v ON a.vehicle_id = v.id
-      WHERE DATE(a.appointment_date) = CURDATE()
+      WHERE DATE(a.appointment_date) = DATE(CONVERT_TZ(NOW(), '+00:00', '+01:00'))
       ORDER BY a.appointment_date ASC
     `);
 
@@ -255,9 +255,9 @@ exports.updateAppointmentStatus = async (req, res) => {
     let queryParams = [status];
 
     if (['IN_PROGRESS', 'IN_WORKSHOP'].includes(status)) {
-      query += `, started_at = COALESCE(started_at, NOW())`;
+      query += `, started_at = COALESCE(started_at, CONVERT_TZ(NOW(), '+00:00', '+01:00'))`;
     } else if (status === 'COMPLETED') {
-      query += `, completed_at = NOW()`;
+      query += `, completed_at = CONVERT_TZ(NOW(), '+00:00', '+01:00')`;
     }
 
     if (cancel_reason) {
