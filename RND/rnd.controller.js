@@ -288,30 +288,63 @@ exports.updatePaymentStatus = async (req, res) => {
   }
 };
 
-// 8. تعديل بيانات الموعد بالكامل
+// 8. تعديل بيانات الموعد بالكامل مع السيارة والعميل
 exports.updateAppointment = async (req, res) => {
   try {
     const { id } = req.params;
-    const { clientName, phone, vin, serviceType, totalAmount, versement } = req.body;
+    const { 
+      clientName, 
+      phone, 
+      make, 
+      model, 
+      licensePlate, 
+      vin, 
+      serviceType, 
+      appointmentDate, 
+      totalAmount, 
+      versement, 
+      paymentStatus, 
+      notes 
+    } = req.body;
 
+    // 1. جلب IDs العميل والسيارة الخاصة بهذا الموعد
+    const [rdv] = await db.query('SELECT client_id, vehicle_id FROM appointments WHERE id = ?', [id]);
+    if (rdv.length === 0) {
+      return res.status(404).json({ message: 'Rendez-vous non trouvé' });
+    }
+
+    const { client_id, vehicle_id } = rdv[0];
+
+    // 2. تحديث جدول المواعيد appointments
     await db.query(
       `UPDATE appointments SET 
         tlf = ?, 
         VIN = ?, 
         service_type = ?, 
+        appointment_date = ?, 
         total_amount = ?, 
-        versement = ? 
+        versement = ?, 
+        payment_status = COALESCE(?, payment_status), 
+        notes = ? 
        WHERE id = ?`,
-      [phone, vin, serviceType, totalAmount, versement, id]
+      [phone, vin, serviceType, appointmentDate, totalAmount, versement, paymentStatus, notes, id]
     );
 
-    await db.query(
-      `UPDATE clients c 
-       JOIN appointments a ON a.client_id = c.id 
-       SET c.full_name = ? 
-       WHERE a.id = ?`,
-      [clientName, id]
-    );
+    // 3. تحديث جدول العملاء clients
+    if (client_id) {
+      await db.query(
+        `UPDATE clients SET full_name = ?, phone = ? WHERE id = ?`,
+        [clientName, phone, client_id]
+      );
+    }
+
+    // 4. تحديث جدول السيارات vehicules
+    if (vehicle_id) {
+      await db.query(
+        `UPDATE vehicules SET make = ?, model = ?, license_plate = ?, vin_number = ? WHERE id = ?`,
+        [make, model, licensePlate, vin, vehicle_id]
+      );
+    }
 
     res.json({ message: 'Rendez-vous mis à jour avec succès' });
   } catch (error) {
