@@ -300,21 +300,14 @@ exports.updateAppointment = async (req, res) => {
       licensePlate, 
       vin, 
       serviceType, 
-      appointmentDate, 
+      appointmentDate, // القيمة القادمة ستكون مثل: "2026-08-31 12:00:00"
       totalAmount, 
       versement, 
       paymentStatus, 
       notes 
     } = req.body;
 
-    // 1. تحويل صيغة التاريخ ISO إلى صيغة MySQL (YYYY-MM-DD HH:MM:SS)
-    let formattedDate = null;
-    if (appointmentDate) {
-      const dateObj = new Date(appointmentDate);
-      formattedDate = dateObj.toISOString().slice(0, 19).replace('T', ' ');
-    }
-
-    // 2. جلب البيانات القديمة
+    // 1. جلب بيانات الموعد
     const [rdv] = await db.query('SELECT client_id, vehicle_id FROM appointments WHERE id = ?', [id]);
     if (rdv.length === 0) {
       return res.status(404).json({ message: 'Rendez-vous non trouvé' });
@@ -322,7 +315,7 @@ exports.updateAppointment = async (req, res) => {
 
     const { client_id, vehicle_id } = rdv[0];
 
-    // 3. تحديث جدول المواعيد باستخدام formattedDate
+    // 2. تحديث جدول المواعيد (تمرير appointmentDate المدمج نصياً مباشرة)
     await db.query(
       `UPDATE appointments SET 
         tlf = ?, 
@@ -338,7 +331,7 @@ exports.updateAppointment = async (req, res) => {
         phone || null, 
         vin || null, 
         serviceType || 'Inspection', 
-        formattedDate, // استخدام التاريخ المنسق هنا
+        appointmentDate || null, // حفظ القيمة نصياً كما هي في قاعدة البيانات
         totalAmount || 0, 
         versement || 0, 
         paymentStatus || 'PENDING_VERSEMENT', 
@@ -347,7 +340,7 @@ exports.updateAppointment = async (req, res) => {
       ]
     );
 
-    // 4. تحديث جدول العملاء clients
+    // 3. تحديث جدول العملاء
     if (client_id) {
       await db.query(
         `UPDATE clients SET full_name = ?, phone = ? WHERE id = ?`,
@@ -355,7 +348,7 @@ exports.updateAppointment = async (req, res) => {
       );
     }
 
-    // 5. تحديث جدول السيارات vehicules
+    // 4. تحديث جدول السيارات
     if (vehicle_id) {
       await db.query(
         `UPDATE vehicules SET make = ?, model = ?, license_plate = ?, vin_number = ? WHERE id = ?`,
