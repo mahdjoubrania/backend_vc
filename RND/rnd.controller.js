@@ -315,7 +315,7 @@ exports.updateAppointment = async (req, res) => {
 
     const { client_id, vehicle_id } = rdv[0];
 
-    // 2. تحديث جدول المواعيد appointments
+    // 2. تحديث جدول المواعيد (تم حذف العمود notes من الاستعلام)
     await db.query(
       `UPDATE appointments SET 
         tlf = ?, 
@@ -324,18 +324,16 @@ exports.updateAppointment = async (req, res) => {
         appointment_date = ?, 
         total_amount = ?, 
         versement = ?, 
-        payment_status = COALESCE(?, payment_status), 
-        notes = ? 
+        payment_status = COALESCE(?, payment_status)
        WHERE id = ?`,
       [
-        phone || "", 
-        vin || "", 
+        phone || null, 
+        vin || null, 
         serviceType || 'Inspection', 
         appointmentDate || null, 
         totalAmount || 0, 
         versement || 0, 
         paymentStatus || 'PENDING_VERSEMENT', 
-        notes || '', 
         id
       ]
     );
@@ -348,7 +346,7 @@ exports.updateAppointment = async (req, res) => {
       );
     }
 
-    // 4. تحديث جدول السيارات vehicules (إن وجد)
+    // 4. تحديث جدول السيارات vehicules
     if (vehicle_id) {
       await db.query(
         `UPDATE vehicules SET make = ?, model = ?, license_plate = ?, vin_number = ? WHERE id = ?`,
