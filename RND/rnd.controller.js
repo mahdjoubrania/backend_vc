@@ -292,79 +292,39 @@ exports.updatePaymentStatus = async (req, res) => {
 exports.updateAppointment = async (req, res) => {
   try {
     const { id } = req.params;
-
-    const {
-      clientName,
-      phone,
-      make,
-      model,
-      licensePlate,
-      vin,
-      serviceType,
-      appointmentDate,
-      totalAmount,
-      versement,
-      paymentStatus,
-      notes
+    const { 
+      clientName, 
+      phone, 
+      make, 
+      model, 
+      licensePlate, 
+      vin, 
+      serviceType, 
+      appointmentDate, 
+      totalAmount, 
+      versement, 
+      paymentStatus, 
+      notes 
     } = req.body;
 
-    // ==========================================
-    // 1. التحقق من الموعد
-    // ==========================================
-
-    const [rdv] = await db.query(
-      'SELECT client_id, vehicle_id FROM appointments WHERE id = ?',
-      [id]
-    );
-
-    if (rdv.length === 0) {
-      return res.status(404).json({
-        message: 'Rendez-vous non trouvé'
-      });
-    }
-
-    const { client_id, vehicle_id } = rdv[0];
-
-    // ==========================================
-    // 2. تحويل التاريخ إلى صيغة MySQL DATETIME
-    // ==========================================
-
-    let mysqlAppointmentDate = null;
-
+    // تنظيف صيغة التاريخ المستلمة وتثبيتها بتنسيق SQL YYYY-MM-DD HH:MM:SS
+    let cleanDate = null;
     if (appointmentDate) {
-
-      // إذا وصل بالشكل:
-      // 2026-08-31 12:00:00
-      if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(appointmentDate)) {
-
-        mysqlAppointmentDate = appointmentDate;
-
-      }
-
-      // إذا وصل بالشكل:
-      // 2026-08-31T14:00:00.000Z
-      else if (appointmentDate.includes('T')) {
-
-        mysqlAppointmentDate = appointmentDate
-          .replace('T', ' ')
-          .replace(/\.\d{3}Z$/, '')
-          .replace(/Z$/, '');
-
-      }
-
-      // أي صيغة أخرى
-      else {
-        mysqlAppointmentDate = appointmentDate;
-      }
+      cleanDate = appointmentDate.replace('T', ' ').replace('Z', '').split('.')[0];
     }
 
-    console.log('📅 Date received:', appointmentDate);
-    console.log('📅 Date sent to MySQL:', mysqlAppointmentDate);
+    // 1. جلب بيانات الموعد
+    const [rdv] = await db.query('SELECT client_id, vehicle_id, appointment_date FROM appointments WHERE id = ?', [id]);
+    if (rdv.length === 0) {
+      return res.status(404).json({ message: 'Rendez-vous non trouvé' });
+    }
 
-    // ==========================================
-    // 3. تحديث الموعد
-    // ==========================================
+    const { client_id, vehicle_id, appointment_date: existingDate } = rdv[0];
+    
+    // في حال لم ترسل تاريخًا جديدًا، يتم الاحتفاظ بالتاريخ القديم
+    const finalDate = cleanDate || existingDate;
 
+    // 2. تحديث جدول المواعيد
     await db.query(
       `UPDATE appointments SET 
         tlf = ?, 
@@ -374,75 +334,41 @@ exports.updateAppointment = async (req, res) => {
         total_amount = ?, 
         versement = ?, 
         payment_status = COALESCE(?, payment_status), 
-        notes = ?
+        notes = ? 
        WHERE id = ?`,
       [
-        phone || null,
-        vin || null,
-        serviceType || 'Inspection',
-        mysqlAppointmentDate,
-        totalAmount || 0,
-        versement || 0,
-        paymentStatus || 'PENDING_VERSEMENT',
-        notes || '',
+        phone || null, 
+        vin || null, 
+        serviceType || 'Inspection', 
+        finalDate, 
+        totalAmount || 0, 
+        versement || 0, 
+        paymentStatus || 'PENDING_VERSEMENT', 
+        notes || '', 
         id
       ]
     );
 
-    // ==========================================
-    // 4. تحديث العميل
-    // ==========================================
-
+    // 3. تحديث جدول العملاء
     if (client_id) {
       await db.query(
-        `UPDATE clients 
-         SET full_name = ?, phone = ? 
-         WHERE id = ?`,
-        [
-          clientName || 'Client',
-          phone || '',
-          client_id
-        ]
+        `UPDATE clients SET full_name = ?, phone = ? WHERE id = ?`,
+        [clientName || 'Client', phone || '', client_id]
       );
     }
 
-    // ==========================================
-    // 5. تحديث السيارة
-    // ==========================================
-
+    // 4. تحديث جدول السيارات
     if (vehicle_id) {
       await db.query(
-        `UPDATE vehicules 
-         SET make = ?, 
-             model = ?, 
-             license_plate = ?, 
-             vin_number = ? 
-         WHERE id = ?`,
-        [
-          make || 'Inconnu',
-          model || 'Inconnu',
-          licensePlate || '',
-          vin || null,
-          vehicle_id
-        ]
+        `UPDATE vehicules SET make = ?, model = ?, license_plate = ?, vin_number = ? WHERE id = ?`,
+        [make || 'Inconnu', model || 'Inconnu', licensePlate || '', vin || null, vehicle_id]
       );
     }
 
-    // ==========================================
-    // 6. نجاح
-    // ==========================================
-
-    res.json({
-      message: 'Rendez-vous mis à jour avec succès'
-    });
-
+    res.json({ message: 'Rendez-vous mis à jour avec succès' });
   } catch (error) {
-
     console.error('Update appointment error:', error);
-
-    res.status(500).json({
-      message: 'Erreur lors de la modification: ' + error.message
-    });
+    res.status(500).json({ message: 'Erreur lors de la modification: ' + error.message });
   }
 };
 // 9. جلب المواعيد الملغاة والغائبة
