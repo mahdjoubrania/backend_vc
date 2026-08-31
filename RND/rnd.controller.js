@@ -327,29 +327,39 @@ exports.updateAppointment = async (req, res) => {
         payment_status = COALESCE(?, payment_status), 
         notes = ? 
        WHERE id = ?`,
-      [phone, vin, serviceType, appointmentDate, totalAmount, versement, paymentStatus, notes, id]
+      [
+        phone || "", 
+        vin || "", 
+        serviceType || 'Inspection', 
+        appointmentDate || null, 
+        totalAmount || 0, 
+        versement || 0, 
+        paymentStatus || 'PENDING_VERSEMENT', 
+        notes || '', 
+        id
+      ]
     );
 
     // 3. تحديث جدول العملاء clients
     if (client_id) {
       await db.query(
         `UPDATE clients SET full_name = ?, phone = ? WHERE id = ?`,
-        [clientName, phone, client_id]
+        [clientName || 'Client', phone || '', client_id]
       );
     }
 
-    // 4. تحديث جدول السيارات vehicules
+    // 4. تحديث جدول السيارات vehicules (إن وجد)
     if (vehicle_id) {
       await db.query(
         `UPDATE vehicules SET make = ?, model = ?, license_plate = ?, vin_number = ? WHERE id = ?`,
-        [make, model, licensePlate, vin, vehicle_id]
+        [make || 'Inconnu', model || 'Inconnu', licensePlate || '', vin || null, vehicle_id]
       );
     }
 
     res.json({ message: 'Rendez-vous mis à jour avec succès' });
   } catch (error) {
     console.error('Update appointment error:', error);
-    res.status(500).json({ message: 'Erreur lors de la modification' });
+    res.status(500).json({ message: 'Erreur lors de la modification: ' + error.message });
   }
 };
 
