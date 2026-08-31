@@ -307,7 +307,14 @@ exports.updateAppointment = async (req, res) => {
       notes 
     } = req.body;
 
-    // 1. جلب IDs العميل والسيارة الخاصة بهذا الموعد
+    // 1. تحويل صيغة التاريخ ISO إلى صيغة MySQL (YYYY-MM-DD HH:MM:SS)
+    let formattedDate = null;
+    if (appointmentDate) {
+      const dateObj = new Date(appointmentDate);
+      formattedDate = dateObj.toISOString().slice(0, 19).replace('T', ' ');
+    }
+
+    // 2. جلب البيانات القديمة
     const [rdv] = await db.query('SELECT client_id, vehicle_id FROM appointments WHERE id = ?', [id]);
     if (rdv.length === 0) {
       return res.status(404).json({ message: 'Rendez-vous non trouvé' });
@@ -315,7 +322,7 @@ exports.updateAppointment = async (req, res) => {
 
     const { client_id, vehicle_id } = rdv[0];
 
-    // 2. تحديث جدول المواعيد (تم حذف العمود notes من الاستعلام)
+    // 3. تحديث جدول المواعيد باستخدام formattedDate
     await db.query(
       `UPDATE appointments SET 
         tlf = ?, 
@@ -324,21 +331,23 @@ exports.updateAppointment = async (req, res) => {
         appointment_date = ?, 
         total_amount = ?, 
         versement = ?, 
-        payment_status = COALESCE(?, payment_status)
+        payment_status = COALESCE(?, payment_status), 
+        notes = ? 
        WHERE id = ?`,
       [
         phone || null, 
         vin || null, 
         serviceType || 'Inspection', 
-        appointmentDate || null, 
+        formattedDate, // استخدام التاريخ المنسق هنا
         totalAmount || 0, 
         versement || 0, 
         paymentStatus || 'PENDING_VERSEMENT', 
+        notes || '', 
         id
       ]
     );
 
-    // 3. تحديث جدول العملاء clients
+    // 4. تحديث جدول العملاء clients
     if (client_id) {
       await db.query(
         `UPDATE clients SET full_name = ?, phone = ? WHERE id = ?`,
@@ -346,7 +355,7 @@ exports.updateAppointment = async (req, res) => {
       );
     }
 
-    // 4. تحديث جدول السيارات vehicules
+    // 5. تحديث جدول السيارات vehicules
     if (vehicle_id) {
       await db.query(
         `UPDATE vehicules SET make = ?, model = ?, license_plate = ?, vin_number = ? WHERE id = ?`,
