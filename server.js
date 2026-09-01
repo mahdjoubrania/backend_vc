@@ -24,11 +24,7 @@ app.use('/api/admin', require('./routes/admin.routes'));
 app.use('/api/admin', require('./routes/rnd.routes'));
 app.use('/api/admin', require('./routes/client.routes')); 
 app.use('/api/vehicules', require('./routes/vehicules.routes'));
-
-// --- المسار المصلح لموديول الفحص والتحقق ---
-// بدلاً من ./routes/kilometrage.routes نربطه بمجلد verification
-const verificationRoutes = require('./verification/inspection.routes');
-app.use('/api/inspection', verificationRoutes);
+app.use('/api/inspection', require('./routes/inspection.routes'));
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {

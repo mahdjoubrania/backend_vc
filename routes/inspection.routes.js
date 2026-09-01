@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const inspectionCtrl = require('./inspection.controller'); 
+const inspectionCtrl = require('./inspection.controller');
 
-// CRUD / Upsert Routes
+// مسارات الفحص والتحقق
 router.post('/kilometrage', inspectionCtrl.saveKilometrage);
 router.post('/scanner', inspectionCtrl.saveScanner);
 router.post('/moteur', inspectionCtrl.saveMoteur);
