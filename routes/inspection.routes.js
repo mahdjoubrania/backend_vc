@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const inspectionCtrl = require('./inspection.controller'); // استدعاء المتحكم الموحد
+const inspectionCtrl = require('./inspection.controller'); 
 
 // CRUD / Upsert Routes
 router.post('/kilometrage', inspectionCtrl.saveKilometrage);
