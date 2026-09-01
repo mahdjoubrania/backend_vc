@@ -1,5 +1,4 @@
-const db = require('../../config/db');
-
+const db = require('../config/db');
 // 1. جلب كافة تفاصيل الفحص
 exports.getInspectionDetails = async (req, res) => {
   const { inspection_id } = req.params;
