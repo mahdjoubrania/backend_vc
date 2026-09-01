@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const inspectionCtrl = require('./inspection.controller');
-
+const inspectionCtrl = require('../verification/inspection.controller');
 // مسارات الفحص والتحقق
 router.post('/kilometrage', inspectionCtrl.saveKilometrage);
 router.post('/scanner', inspectionCtrl.saveScanner);
