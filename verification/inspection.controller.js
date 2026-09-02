@@ -159,17 +159,19 @@ exports.saveTole = async (req, res) => {
   }
 };
 
-// دالة مساعدة لضمان وجود الفحص في جدول inspections
-async function ensureInspectionExists(inspectionId) {
-  // 1. التحقق مما إذا كان المعرف موجوداً أصلاً كـ inspection_id
+async function ensureInspectionExists(inspectionId, userId) {
+  // 1. التحقق مما إذا كان المعرف موجوداً كـ inspection_id
   const [existing] = await db.query('SELECT id FROM inspections WHERE id = ?', [inspectionId]);
   if (existing.length > 0) return inspectionId;
 
-  // 2. إذا لم يكن موجوداً وكان هو appointment_id، نبحث عنه بوساطة appointment_id
+  // 2. البحث عن السجل بواسطة appointment_id
   const [byAppt] = await db.query('SELECT id FROM inspections WHERE appointment_id = ?', [inspectionId]);
   if (byAppt.length > 0) return byAppt[0].id;
 
-  // 3. إن لم يوجد سجل، ننشئ سجلاً جديداً نربطه بالـ appointment_id
-  const [result] = await db.query('INSERT INTO inspections (appointment_id, created_at) VALUES (?, NOW())', [inspectionId]);
+  // 3. إنشاء سجل جديد باستخدام userId الممرر من التوثيق (req.user.id)
+  const [result] = await db.query(
+    'INSERT INTO inspections (appointment_id, technician_id, created_at) VALUES (?, ?, NOW())', 
+    [inspectionId, userId]
+  );
   return result.insertId;
 }
