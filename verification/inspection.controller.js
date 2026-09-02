@@ -32,16 +32,21 @@ exports.getInspectionDetails = async (req, res) => {
 
 // 2. حفظ / تحديث الكيلومتراج
 exports.saveKilometrage = async (req, res) => {
-  const { inspection_id, kilometrage_affiche, conformite, notes } = req.body;
-  const sql = `
-    INSERT INTO inspection_kilometrage (inspection_id, kilometrage_affiche, conformite, notes)
-    VALUES (?, ?, ?, ?)
-    ON DUPLICATE KEY UPDATE 
-      kilometrage_affiche = VALUES(kilometrage_affiche),
-      conformite = VALUES(conformite),
-      notes = VALUES(notes);
-  `;
+  let { inspection_id, kilometrage_affiche, conformite, notes } = req.body;
+
   try {
+    // التأكد من وجود الـ ID وتوليد السجل في جدول inspections إن لزم الأمر
+    inspection_id = await ensureInspectionExists(inspection_id);
+
+    const sql = `
+      INSERT INTO inspection_kilometrage (inspection_id, kilometrage_affiche, conformite, notes)
+      VALUES (?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE 
+        kilometrage_affiche = VALUES(kilometrage_affiche),
+        conformite = VALUES(conformite),
+        notes = VALUES(notes);
+    `;
+
     await db.query(sql, [inspection_id, kilometrage_affiche, conformite, notes]);
     res.json({ success: true, message: 'تم حفظ بيانات الكيلومتراج بنجاح' });
   } catch (err) {
@@ -153,3 +158,18 @@ exports.saveTole = async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 };
+
+// دالة مساعدة لضمان وجود الفحص في جدول inspections
+async function ensureInspectionExists(inspectionId) {
+  // 1. التحقق مما إذا كان المعرف موجوداً أصلاً كـ inspection_id
+  const [existing] = await db.query('SELECT id FROM inspections WHERE id = ?', [inspectionId]);
+  if (existing.length > 0) return inspectionId;
+
+  // 2. إذا لم يكن موجوداً وكان هو appointment_id، نبحث عنه بوساطة appointment_id
+  const [byAppt] = await db.query('SELECT id FROM inspections WHERE appointment_id = ?', [inspectionId]);
+  if (byAppt.length > 0) return byAppt[0].id;
+
+  // 3. إن لم يوجد سجل، ننشئ سجلاً جديداً نربطه بالـ appointment_id
+  const [result] = await db.query('INSERT INTO inspections (appointment_id, created_at) VALUES (?, NOW())', [inspectionId]);
+  return result.insertId;
+}
