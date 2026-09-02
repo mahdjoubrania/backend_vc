@@ -1,4 +1,5 @@
 const db = require('../config/db');
+
 // 1. جلب كافة تفاصيل الفحص
 exports.getInspectionDetails = async (req, res) => {
   const { inspection_id } = req.params;
@@ -9,6 +10,7 @@ exports.getInspectionDetails = async (req, res) => {
     const [moteur] = await db.query('SELECT * FROM inspection_moteur WHERE inspection_id = ?', [inspection_id]);
     const [suspension] = await db.query('SELECT * FROM inspection_suspension WHERE inspection_id = ?', [inspection_id]);
     const [tole_elements] = await db.query('SELECT * FROM inspection_tole_elements WHERE inspection_id = ?', [inspection_id]);
+    const [visual_marks] = await db.query('SELECT * FROM inspection_visual_marks WHERE inspection_id = ?', [inspection_id]);
     const [car_drawing] = await db.query('SELECT * FROM inspection_car_drawing WHERE inspection_id = ?', [inspection_id]);
 
     res.json({
@@ -19,6 +21,7 @@ exports.getInspectionDetails = async (req, res) => {
         moteur: moteur[0] || null,
         suspension: suspension[0] || null,
         tole_elements: tole_elements || [],
+        visual_marks: visual_marks || [],
         drawing: car_drawing[0] ? car_drawing[0].drawing_data : null
       }
     });
@@ -29,17 +32,17 @@ exports.getInspectionDetails = async (req, res) => {
 
 // 2. حفظ / تحديث الكيلومتراج
 exports.saveKilometrage = async (req, res) => {
-  const { inspection_id, kilometrage_affiche, conforme, notes } = req.body;
+  const { inspection_id, kilometrage_affiche, conformite, notes } = req.body;
   const sql = `
-    INSERT INTO inspection_kilometrage (inspection_id, kilometrage_affiche, conforme, notes)
+    INSERT INTO inspection_kilometrage (inspection_id, kilometrage_affiche, conformite, notes)
     VALUES (?, ?, ?, ?)
     ON DUPLICATE KEY UPDATE 
       kilometrage_affiche = VALUES(kilometrage_affiche),
-      conforme = VALUES(conforme),
+      conformite = VALUES(conformite),
       notes = VALUES(notes);
   `;
   try {
-    await db.query(sql, [inspection_id, kilometrage_affiche, conforme, notes]);
+    await db.query(sql, [inspection_id, kilometrage_affiche, conformite, notes]);
     res.json({ success: true, message: 'تم حفظ بيانات الكيلومتراج بنجاح' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -110,10 +113,11 @@ exports.saveSuspension = async (req, res) => {
   }
 };
 
-// 6. حفظ / تحديث الهيكل والرسم
+// 6. حفظ / تحديث الهيكل، الرسم، والعلامات المرئية
 exports.saveTole = async (req, res) => {
-  const { inspection_id, drawing_data, elements } = req.body;
+  const { inspection_id, drawing_data, elements, visual_marks } = req.body;
   try {
+    // 1. حفظ رسم اللوحة Canvas
     if (drawing_data) {
       await db.query(`
         INSERT INTO inspection_car_drawing (inspection_id, drawing_data)
@@ -121,6 +125,7 @@ exports.saveTole = async (req, res) => {
       `, [inspection_id, drawing_data]);
     }
 
+    // 2. حفظ عناصر الهيكل
     if (elements && elements.length > 0) {
       await db.query('DELETE FROM inspection_tole_elements WHERE inspection_id = ?', [inspection_id]);
       for (const el of elements) {
@@ -131,7 +136,19 @@ exports.saveTole = async (req, res) => {
       }
     }
 
-    res.json({ success: true, message: 'تم حفظ الهيكل والرسم بنجاح' });
+    // 3. حفظ النقاط والعلامات المرئية على المخطط (Visual Marks)
+    if (visual_marks && Array.isArray(visual_marks)) {
+      await db.query('DELETE FROM inspection_visual_marks WHERE inspection_id = ?', [inspection_id]);
+      for (const mark of visual_marks) {
+        await db.query(
+          `INSERT INTO inspection_visual_marks (inspection_id, mark_type, color_code, pos_x, pos_y, notes) 
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [inspection_id, mark.mark_type, mark.color_code, mark.pos_x, mark.pos_y, mark.notes || null]
+        );
+      }
+    }
+
+    res.json({ success: true, message: 'تم حفظ بيانات الهيكل والمخطط بنجاح' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
