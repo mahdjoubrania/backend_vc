@@ -185,63 +185,36 @@ exports.saveMoteur = async (req, res) => {
 
   try {
     if (!req.user?.id) {
-      return res.status(401).json({
-        success: false,
-        error: 'Utilisateur non authentifié'
-      });
+      return res.status(401).json({ success: false, error: 'Utilisateur non authentifié' });
     }
 
-    const realInspectionId = await ensureInspectionExists(
-      inspection_id,
-      req.user.id
-    );
+    const realInspectionId = await ensureInspectionExists(inspection_id, req.user.id);
 
-    const sql = `
-      INSERT INTO inspection_moteur
-        (
-          inspection_id,
-          niveau_huile,
-          fuite_huile,
-          fuite_liquide_refroidissement,
-          bruit_moteur,
-          fumee_echappement,
-          notes
-        )
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE
-        niveau_huile = VALUES(niveau_huile),
-        fuite_huile = VALUES(fuite_huile),
-        fuite_liquide_refroidissement = VALUES(fuite_liquide_refroidissement),
-        bruit_moteur = VALUES(bruit_moteur),
-        fumee_echappement = VALUES(fumee_echappement),
-        notes = VALUES(notes)
-    `;
+    // حذف البيانات القديمة للفحص نفسه وإعادة إدراجها
+    await db.query('DELETE FROM inspection_moteur WHERE inspection_id = ?', [realInspectionId]);
 
-    await db.query(sql, [
-      realInspectionId,
-      niveau_huile,
-      fuite_huile,
-      fuite_liquide_refroidissement,
-      bruit_moteur,
-      fumee_echappement,
-      notes
-    ]);
+    const items = [
+      ['niveau_huile', niveau_huile, null],
+      ['fuite_huile', fuite_huile ? 'OUI' : 'NON', null],
+      ['fuite_liquide_refroidissement', fuite_liquide_refroidissement ? 'OUI' : 'NON', null],
+      ['bruit_moteur', bruit_moteur ? 'OUI' : 'NON', null],
+      ['fumee_echappement', fumee_echappement, null],
+      ['general_notes', null, notes]
+    ];
 
-    res.json({
-      success: true,
-      message: 'تم حفظ بيانات المحرك بنجاح'
-    });
+    for (const [element, status, observation] of items) {
+      await db.query(
+        `INSERT INTO inspection_moteur (inspection_id, element, status, observation) VALUES (?, ?, ?, ?)`,
+        [realInspectionId, element, status, observation]
+      );
+    }
 
+    res.json({ success: true, message: 'تم حفظ بيانات المحرك بنجاح' });
   } catch (err) {
     console.error('❌ saveMoteur:', err);
-
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
-
 
 // ============================================================
 // 4. حفظ / تحديث السكانير
@@ -315,70 +288,50 @@ exports.saveScanner = async (req, res) => {
 exports.saveSuspension = async (req, res) => {
   const {
     inspection_id,
-    amortisseurs_avant,
-    amortisseurs_arriere,
-    pneus_usure,
-    rotules_cremaillere,
-    corrosion_soubassement,
+    usure_pneu_avg, obs_pneu_avg,
+    usure_pneu_avd, obs_pneu_avd,
+    usure_pneu_arg, obs_pneu_arg,
+    usure_pneu_ard, obs_pneu_ard,
+    jante_avg, jante_avd, jante_arg, jante_ard,
+    corrosion_soubassement, traces_choc,
     notes
   } = req.body;
 
   try {
     if (!req.user?.id) {
-      return res.status(401).json({
-        success: false,
-        error: 'Utilisateur non authentifié'
-      });
+      return res.status(401).json({ success: false, error: 'Utilisateur non authentifié' });
     }
 
-    const realInspectionId = await ensureInspectionExists(
-      inspection_id,
-      req.user.id
-    );
+    const realInspectionId = await ensureInspectionExists(inspection_id, req.user.id);
 
-    const sql = `
-      INSERT INTO inspection_suspension
-        (
-          inspection_id,
-          amortisseurs_avant,
-          amortisseurs_arriere,
-          pneus_usure,
-          rotules_cremaillere,
-          corrosion_soubassement,
-          notes
-        )
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE
-        amortisseurs_avant = VALUES(amortisseurs_avant),
-        amortisseurs_arriere = VALUES(amortisseurs_arriere),
-        pneus_usure = VALUES(pneus_usure),
-        rotules_cremaillere = VALUES(rotules_cremaillere),
-        corrosion_soubassement = VALUES(corrosion_soubassement),
-        notes = VALUES(notes)
+    await db.query('DELETE FROM inspection_suspension WHERE inspection_id = ?', [realInspectionId]);
+
+    const query = `
+      INSERT INTO inspection_suspension (
+        inspection_id,
+        usure_pneu_avg, obs_pneu_avg,
+        usure_pneu_avd, obs_pneu_avd,
+        usure_pneu_arg, obs_pneu_arg,
+        usure_pneu_ard, obs_pneu_ard,
+        jante_avg, jante_avd, jante_arg, jante_ard,
+        corrosion_soubassement, traces_choc, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
-    await db.query(sql, [
+    await db.query(query, [
       realInspectionId,
-      amortisseurs_avant,
-      amortisseurs_arriere,
-      pneus_usure,
-      rotules_cremaillerie,
-      corrosion_soubassement,
-      notes
+      usure_pneu_avg || 'Conforme', obs_pneu_avg || null,
+      usure_pneu_avd || 'Conforme', obs_pneu_avd || null,
+      usure_pneu_arg || 'Conforme', obs_pneu_arg || null,
+      usure_pneu_ard || 'Conforme', obs_pneu_ard || null,
+      jante_avg || 'Conforme', jante_avd || 'Conforme', jante_arg || 'Conforme', jante_ard || 'Conforme',
+      corrosion_soubassement ? 1 : 0, traces_choc ? 1 : 0, notes || null
     ]);
 
-    res.json({
-      success: true,
-      message: 'تم حفظ بيانات نظام التعليق بنجاح'
-    });
-
+    res.json({ success: true, message: 'Données de suspension enregistrées avec succès' });
   } catch (err) {
     console.error('❌ saveSuspension:', err);
-
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
