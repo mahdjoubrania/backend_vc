@@ -308,11 +308,11 @@ exports.saveScanner = async (req, res) => {
   }
 };
 
+
 // ============================================================
 // 5. حفظ / تحديث نظام التعليق
 // ============================================================
 exports.saveSuspension = async (req, res) => {
-
   const {
     inspection_id,
     amortisseurs_avant,
@@ -348,13 +348,13 @@ exports.saveSuspension = async (req, res) => {
           notes
         )
       VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-  amortisseurs_avant = VALUES(amortisseurs_avant),
-  amortisseurs_arriere = VALUES(amortisseurs_arriere),
-  pneus_usure = VALUES(pneus_usure),
-  rotules_cremaillere = VALUES(rotules_cremaillere), 
-  corrosion_soubassement = VALUES(corrosion_soubassement),
-  notes = VALUES(notes)
+      ON DUPLICATE KEY UPDATE
+        amortisseurs_avant = VALUES(amortisseurs_avant),
+        amortisseurs_arriere = VALUES(amortisseurs_arriere),
+        pneus_usure = VALUES(pneus_usure),
+        rotules_cremaillere = VALUES(rotules_cremaire),
+        corrosion_soubassement = VALUES(corrosion_soubassement),
+        notes = VALUES(notes)
     `;
 
     await db.query(sql, [
