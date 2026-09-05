@@ -352,7 +352,7 @@ exports.saveSuspension = async (req, res) => {
         amortisseurs_avant = VALUES(amortisseurs_avant),
         amortisseurs_arriere = VALUES(amortisseurs_arriere),
         pneus_usure = VALUES(pneus_usure),
-        rotules_cremaillere = VALUES(rotules_cremaire),
+        rotules_cremaillere = VALUES(rotules_cremaillere),
         corrosion_soubassement = VALUES(corrosion_soubassement),
         notes = VALUES(notes)
     `;

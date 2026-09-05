@@ -1,12 +1,14 @@
 const express = require('express');
 const router = express.Router();
-const inspectionCtrl = require('../verification/inspection.controller');
-// مسارات الفحص والتحقق
-router.post('/kilometrage', inspectionCtrl.saveKilometrage);
-router.post('/scanner', inspectionCtrl.saveScanner);
-router.post('/moteur', inspectionCtrl.saveMoteur);
-router.post('/suspension', inspectionCtrl.saveSuspension);
-router.post('/tole', inspectionCtrl.saveTole);
-router.get('/details/:inspection_id', inspectionCtrl.getInspectionDetails);
+const inspectionCtrl = require('../verification/inspection.controller'); 
+const verifyToken = require('../middleware/auth.middleware');
 
-module.exports = router;
+
+router.post('/kilometrage', verifyToken, inspectionCtrl.saveKilometrage); 
+router.post('/scanner', verifyToken, inspectionCtrl.saveScanner); 
+router.post('/moteur', verifyToken, inspectionCtrl.saveMoteur); 
+router.post('/suspension', verifyToken, inspectionCtrl.saveSuspension); 
+router.post('/tole', verifyToken, inspectionCtrl.saveTole); 
+router.get('/details/:inspection_id', verifyToken, inspectionCtrl.getInspectionDetails); 
+
+module.exports = router; 
