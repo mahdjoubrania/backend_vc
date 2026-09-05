@@ -342,115 +342,57 @@ exports.saveSuspension = async (req, res) => {
 exports.saveTole = async (req, res) => {
   const {
     inspection_id,
-    drawing_data,
-    elements,
-    visual_marks
+    elements_ext_json,
+    longerons_status, longerons_obs,
+    traverses_status, traverses_obs,
+    passage_roues_status, passage_roues_obs,
+    fond_coffre_status, fond_coffre_obs,
+    chassis_status, chassis_obs,
+    optique_status, optique_obs,
+    vitre_status, vitre_obs,
+    conclusion_structure, notes
   } = req.body;
 
   try {
     if (!req.user?.id) {
-      return res.status(401).json({
-        success: false,
-        error: 'Utilisateur non authentifié'
-      });
+      return res.status(401).json({ success: false, error: 'Utilisateur non authentifié' });
     }
 
-    const realInspectionId = await ensureInspectionExists(
-      inspection_id,
-      req.user.id
-    );
+    const realInspectionId = await ensureInspectionExists(inspection_id, req.user.id);
 
-    // 1. رسم السيارة
-    if (drawing_data) {
-      await db.query(`
-        INSERT INTO inspection_car_drawing
-          (inspection_id, drawing_data)
-        VALUES (?, ?)
-        ON DUPLICATE KEY UPDATE
-          drawing_data = VALUES(drawing_data)
-      `, [
-        realInspectionId,
-        drawing_data
-      ]);
-    }
+    await db.query('DELETE FROM inspection_tole WHERE inspection_id = ?', [realInspectionId]);
 
-    // 2. عناصر الهيكل
-    if (elements && Array.isArray(elements)) {
+    const query = `
+      INSERT INTO inspection_tole (
+        inspection_id, elements_ext_json,
+        longerons_status, longerons_obs,
+        traverses_status, traverses_obs,
+        passage_roues_status, passage_roues_obs,
+        fond_coffre_status, fond_coffre_obs,
+        chassis_status, chassis_obs,
+        optique_status, optique_obs,
+        vitre_status, vitre_obs,
+        conclusion_structure, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
 
-      await db.query(
-        'DELETE FROM inspection_tole_elements WHERE inspection_id = ?',
-        [realInspectionId]
-      );
+    await db.query(query, [
+      realInspectionId,
+      JSON.stringify(elements_ext_json || {}),
+      longerons_status || 'Conforme', longerons_obs || null,
+      traverses_status || 'Conforme', traverses_obs || null,
+      passage_roues_status || 'Conforme', passage_roues_obs || null,
+      fond_coffre_status || 'Conforme', fond_coffre_obs || null,
+      chassis_status || 'Conforme', chassis_obs || null,
+      optique_status || 'Conforme', optique_obs || null,
+      vitre_status || 'Conforme', vitre_obs || null,
+      conclusion_structure || 'Aucun accident détecté',
+      notes || null
+    ]);
 
-      for (const el of elements) {
-        await db.query(
-          `
-          INSERT INTO inspection_tole_elements
-            (
-              inspection_id,
-              element_name,
-              peinture,
-              a_froid,
-              choque
-            )
-          VALUES (?, ?, ?, ?, ?)
-          `,
-          [
-            realInspectionId,
-            el.name,
-            el.peinture ? 1 : 0,
-            el.a_froid ? 1 : 0,
-            el.choque ? 1 : 0
-          ]
-        );
-      }
-    }
-
-    // 3. العلامات المرئية
-    if (visual_marks && Array.isArray(visual_marks)) {
-
-      await db.query(
-        'DELETE FROM inspection_visual_marks WHERE inspection_id = ?',
-        [realInspectionId]
-      );
-
-      for (const mark of visual_marks) {
-        await db.query(
-          `
-          INSERT INTO inspection_visual_marks
-            (
-              inspection_id,
-              mark_type,
-              color_code,
-              pos_x,
-              pos_y,
-              notes
-            )
-          VALUES (?, ?, ?, ?, ?, ?)
-          `,
-          [
-            realInspectionId,
-            mark.mark_type,
-            mark.color_code,
-            mark.pos_x,
-            mark.pos_y,
-            mark.notes || null
-          ]
-        );
-      }
-    }
-
-    res.json({
-      success: true,
-      message: 'تم حفظ بيانات الهيكل والمخطط بنجاح'
-    });
-
+    res.json({ success: true, message: 'Données de carrosserie enregistrées avec succès' });
   } catch (err) {
     console.error('❌ saveTole:', err);
-
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
