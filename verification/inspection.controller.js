@@ -427,8 +427,9 @@ exports.getAllInspections = async (req, res) => {
   }
 };
 
+
 // ============================================================
-// جلب تفاصيل تقرير الهيكل (Tôle) المخصص للطباعة
+// جلب تفاصيل تقرير الهيكل (Tôle) المخصص للطباعة مع كافة الأجزاء
 // ============================================================
 exports.getToleReportById = async (req, res) => {
   const { id } = req.params;
@@ -436,19 +437,45 @@ exports.getToleReportById = async (req, res) => {
   try {
     const query = `
       SELECT 
-        i.id,
+        i.id AS inspection_id,
         i.created_at,
-        t.*,
         c.full_name AS client_name,
         c.phone AS client_phone,
         v.make AS brand,
         v.model,
-        v.license_plate AS plate
+        v.license_plate AS plate,
+        km.kilometrage_affiche,
+        km.conformite AS km_conformite,
+        sc.dtc_codes,
+        sc.calculateur_status,
+        sc.voyants_allumes,
+        mot.niveau_huile,
+        mot.fuite_huile,
+        mot.bruit_moteur,
+        t.elements_ext_json,
+        t.longerons_status, t.longerons_obs,
+        t.traverses_status, t.traverses_obs,
+        t.passage_roues_status, t.passage_roues_obs,
+        t.fond_coffre_status, t.fond_coffre_obs,
+        t.chassis_status, t.chassis_obs,
+        t.optique_status, t.optique_obs,
+        t.vitre_status, t.vitre_obs,
+        t.conclusion_structure
       FROM inspections i
-      LEFT JOIN inspection_tole t ON i.id = t.inspection_id
       LEFT JOIN appointments a ON i.appointment_id = a.id
       LEFT JOIN clients c ON a.client_id = c.id
       LEFT JOIN vehicules v ON a.vehicle_id = v.id
+      LEFT JOIN inspection_tole t ON i.id = t.inspection_id
+      LEFT JOIN inspection_kilometrage km ON i.id = km.inspection_id
+      LEFT JOIN inspection_scanner sc ON i.id = sc.inspection_id
+      LEFT JOIN (
+        SELECT inspection_id, 
+               MAX(CASE WHEN element = 'niveau_huile' THEN status END) AS niveau_huile,
+               MAX(CASE WHEN element = 'fuite_huile' THEN status END) AS fuite_huile,
+               MAX(CASE WHEN element = 'bruit_moteur' THEN status END) AS bruit_moteur
+        FROM inspection_moteur 
+        GROUP BY inspection_id
+      ) mot ON i.id = mot.inspection_id
       WHERE i.id = ?
     `;
 
