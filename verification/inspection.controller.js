@@ -450,9 +450,6 @@ exports.getToleReportById = async (req, res) => {
         sc.dtc_codes,
         sc.calculateur_status,
         sc.voyants_allumes,
-        mot.niveau_huile,
-        mot.fuite_huile,
-        mot.bruit_moteur,
         t.elements_ext_json,
         t.longerons_status, t.longerons_obs,
         t.traverses_status, t.traverses_obs,
@@ -469,14 +466,6 @@ exports.getToleReportById = async (req, res) => {
       LEFT JOIN inspection_tole t ON i.id = t.inspection_id
       LEFT JOIN inspection_kilometrage km ON i.id = km.inspection_id
       LEFT JOIN inspection_scanner sc ON i.id = sc.inspection_id
-      LEFT JOIN (
-        SELECT inspection_id, 
-               MAX(CASE WHEN element = 'niveau_huile' THEN status END) AS niveau_huile,
-               MAX(CASE WHEN element = 'fuite_huile' THEN status END) AS fuite_huile,
-               MAX(CASE WHEN element = 'bruit_moteur' THEN status END) AS bruit_moteur
-        FROM inspection_moteur 
-        GROUP BY inspection_id
-      ) mot ON i.id = mot.inspection_id
       WHERE i.id = ?
     `;
 
@@ -486,7 +475,16 @@ exports.getToleReportById = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
     }
 
-    res.json({ success: true, data: rows[0] });
+    // جلب مستوى الزيت بشكل مستقل لضمان عدم حدوث خطأ SQL
+    const [moteurRows] = await db.query(
+      'SELECT status FROM inspection_moteur WHERE inspection_id = ? AND element = "niveau_huile" LIMIT 1',
+      [id]
+    );
+
+    const reportData = rows[0];
+    reportData.niveau_huile = moteurRows.length > 0 ? moteurRows[0].status : 'CONFORME';
+
+    res.json({ success: true, data: reportData });
   } catch (err) {
     console.error('❌ getToleReportById:', err);
     res.status(500).json({ success: false, error: err.message });
