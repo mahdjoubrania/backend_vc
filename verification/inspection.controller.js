@@ -458,7 +458,8 @@ exports.getToleReportById = async (req, res) => {
         t.chassis_status, t.chassis_obs,
         t.optique_status, t.optique_obs,
         t.vitre_status, t.vitre_obs,
-        t.conclusion_structure
+        t.conclusion_structure,
+        mot.status AS niveau_huile
       FROM inspections i
       LEFT JOIN appointments a ON i.appointment_id = a.id
       LEFT JOIN clients c ON a.client_id = c.id
@@ -466,23 +467,20 @@ exports.getToleReportById = async (req, res) => {
       LEFT JOIN inspection_tole t ON i.id = t.inspection_id
       LEFT JOIN inspection_kilometrage km ON i.id = km.inspection_id
       LEFT JOIN inspection_scanner sc ON i.id = sc.inspection_id
+      LEFT JOIN inspection_moteur mot ON (i.id = mot.inspection_id AND mot.element = 'niveau_huile')
       WHERE i.id = ?
     `;
 
     const [rows] = await db.query(query, [id]);
 
-    if (rows.length === 0) {
+    if (!rows || rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
     }
 
-    // جلب مستوى الزيت بشكل مستقل لضمان عدم حدوث خطأ SQL
-    const [moteurRows] = await db.query(
-      'SELECT status FROM inspection_moteur WHERE inspection_id = ? AND element = "niveau_huile" LIMIT 1',
-      [id]
-    );
-
     const reportData = rows[0];
-    reportData.niveau_huile = moteurRows.length > 0 ? moteurRows[0].status : 'CONFORME';
+    if (!reportData.niveau_huile) {
+      reportData.niveau_huile = 'Non contrôlé';
+    }
 
     res.json({ success: true, data: reportData });
   } catch (err) {
