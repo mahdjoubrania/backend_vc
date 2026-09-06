@@ -415,7 +415,7 @@ exports.getAllInspections = async (req, res) => {
       LEFT JOIN appointments a ON i.appointment_id = a.id
       LEFT JOIN clients c ON a.client_id = c.id
       LEFT JOIN vehicules v ON a.vehicle_id = v.id
-      LEFT JOIN users u ON i.technician_id = u.id
+      LEFT JOIN users u ON i.user_id = u.id
       ORDER BY i.created_at DESC
     `;
 
