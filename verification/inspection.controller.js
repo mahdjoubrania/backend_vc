@@ -407,15 +407,15 @@ exports.getAllInspections = async (req, res) => {
         i.created_at,
         c.full_name AS client_name,
         c.phone AS client_phone,
-        v.brand,
+        v.make AS brand,
         v.model,
-        v.plate,
+        v.license_plate AS plate,
         u.full_name AS technician_name
       FROM inspections i
       LEFT JOIN appointments a ON i.appointment_id = a.id
       LEFT JOIN clients c ON a.client_id = c.id
-      LEFT JOIN vehicles v ON a.vehicle_id = v.id
-      LEFT JOIN users u ON i.user_id = u.id
+      LEFT JOIN vehicules v ON a.vehicle_id = v.id
+      LEFT JOIN users u ON i.technician_id = u.id
       ORDER BY i.created_at DESC
     `;
 
@@ -428,7 +428,7 @@ exports.getAllInspections = async (req, res) => {
 };
 
 // ============================================================
-// جلب تفاصيل تقرير الهيكل (Tôle) المخصص للطباعة (carrosserie-report.html)
+// جلب تفاصيل تقرير الهيكل (Tôle) المخصص للطباعة
 // ============================================================
 exports.getToleReportById = async (req, res) => {
   const { id } = req.params;
@@ -441,15 +441,14 @@ exports.getToleReportById = async (req, res) => {
         t.*,
         c.full_name AS client_name,
         c.phone AS client_phone,
-        v.brand,
+        v.make AS brand,
         v.model,
-        v.plate,
-        v.mileage
+        v.license_plate AS plate
       FROM inspections i
       LEFT JOIN inspection_tole t ON i.id = t.inspection_id
       LEFT JOIN appointments a ON i.appointment_id = a.id
       LEFT JOIN clients c ON a.client_id = c.id
-      LEFT JOIN vehicles v ON a.vehicle_id = v.id
+      LEFT JOIN vehicules v ON a.vehicle_id = v.id
       WHERE i.id = ?
     `;
 
