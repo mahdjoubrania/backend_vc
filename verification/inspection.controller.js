@@ -396,3 +396,72 @@ exports.saveTole = async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 };
+// ============================================================
+// جلب قائمة جميع التقارير للصفحة الرئيسية (reports.html)
+// ============================================================
+exports.getAllInspections = async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        i.id,
+        i.created_at,
+        c.full_name AS client_name,
+        c.phone AS client_phone,
+        v.brand,
+        v.model,
+        v.plate,
+        u.full_name AS technician_name
+      FROM inspections i
+      LEFT JOIN appointments a ON i.appointment_id = a.id
+      LEFT JOIN clients c ON a.client_id = c.id
+      LEFT JOIN vehicles v ON a.vehicle_id = v.id
+      LEFT JOIN users u ON i.user_id = u.id
+      ORDER BY i.created_at DESC
+    `;
+
+    const [rows] = await db.query(query);
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error('❌ getAllInspections:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// ============================================================
+// جلب تفاصيل تقرير الهيكل (Tôle) المخصص للطباعة (carrosserie-report.html)
+// ============================================================
+exports.getToleReportById = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const query = `
+      SELECT 
+        i.id,
+        i.created_at,
+        t.*,
+        c.full_name AS client_name,
+        c.phone AS client_phone,
+        v.brand,
+        v.model,
+        v.plate,
+        v.mileage
+      FROM inspections i
+      LEFT JOIN inspection_tole t ON i.id = t.inspection_id
+      LEFT JOIN appointments a ON i.appointment_id = a.id
+      LEFT JOIN clients c ON a.client_id = c.id
+      LEFT JOIN vehicles v ON a.vehicle_id = v.id
+      WHERE i.id = ?
+    `;
+
+    const [rows] = await db.query(query, [id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
+    }
+
+    res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error('❌ getToleReportById:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
