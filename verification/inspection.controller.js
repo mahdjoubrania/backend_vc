@@ -437,6 +437,7 @@ exports.getToleReportById = async (req, res) => {
   try {
     const query = `
       SELECT 
+        i.id,
         i.id AS inspection_id,
         i.created_at,
         c.full_name AS client_name,

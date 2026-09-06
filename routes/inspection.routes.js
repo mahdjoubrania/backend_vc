@@ -12,8 +12,9 @@ router.post('/suspension', verifyToken, inspectionCtrl.saveSuspension);
 router.post('/tole', verifyToken, inspectionCtrl.saveTole); 
 
 // مسارات الجلب (GET)
-router.get('/all', inspectionCtrl.getAllInspections); // قائمة جميع التقارير
-router.get('/tole/:id', inspectionCtrl.getToleReportById); // تقرير الهيكل 4 صفحات
+router.get('/all', verifyToken, inspectionCtrl.getAllInspections); 
+router.get('/tole/:id', verifyToken, inspectionCtrl.getToleReportById);
+router.get('/tole-report/:id', verifyToken, inspectionCtrl.getToleReportById); 
 router.get('/details/:inspection_id', verifyToken, inspectionCtrl.getInspectionDetails); 
 
 module.exports = router;
