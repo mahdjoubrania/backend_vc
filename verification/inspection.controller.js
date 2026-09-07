@@ -1,68 +1,6 @@
 const db = require('../config/db');
 
-exports.getInspectionDetails = async (req, res) => {
-  const { inspection_id } = req.params;
 
-  try {
-    const [kilometrage] = await db.query(
-      'SELECT * FROM inspection_kilometrage WHERE inspection_id = ?',
-      [inspection_id]
-    );
-
-    const [scanner] = await db.query(
-      'SELECT * FROM inspection_scanner WHERE inspection_id = ?',
-      [inspection_id]
-    );
-
-    const [moteur] = await db.query(
-      'SELECT * FROM inspection_moteur WHERE inspection_id = ?',
-      [inspection_id]
-    );
-
-    const [suspension] = await db.query(
-      'SELECT * FROM inspection_suspension WHERE inspection_id = ?',
-      [inspection_id]
-    );
-
-    const [tole_elements] = await db.query(
-      'SELECT * FROM inspection_tole_elements WHERE inspection_id = ?',
-      [inspection_id]
-    );
-
-    const [visual_marks] = await db.query(
-      'SELECT * FROM inspection_visual_marks WHERE inspection_id = ?',
-      [inspection_id]
-    );
-
-    const [car_drawing] = await db.query(
-      'SELECT * FROM inspection_car_drawing WHERE inspection_id = ?',
-      [inspection_id]
-    );
-
-    res.json({
-      success: true,
-      data: {
-        kilometrage: kilometrage[0] || null,
-        scanner: scanner[0] || null,
-        moteur: moteur[0] || null,
-        suspension: suspension[0] || null,
-        tole_elements: tole_elements || [],
-        visual_marks: visual_marks || [],
-        drawing: car_drawing[0]
-          ? car_drawing[0].drawing_data
-          : null
-      }
-    });
-
-  } catch (err) {
-    console.error('❌ getInspectionDetails:', err);
-
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
-  }
-};
 
 exports.saveKilometrage = async (req, res) => {
   let {
@@ -508,3 +446,60 @@ exports.getToleReportById = async (req, res) => {
 };
 
 exports.getToleReport = exports.getToleReportById;
+exports.getInspectionDetails = async (req, res) => {
+  const { inspection_id } = req.params;
+
+  try {
+    // 1. جلب البيانات الرئيسية للفحص
+    const [inspections] = await db.query(
+      `SELECT i.*, 
+              c.full_name AS client_name, c.phone AS client_phone,
+              v.make, v.model, v.license_plate, v.vin_number
+       FROM inspections i
+       LEFT JOIN appointments a ON i.appointment_id = a.id
+       LEFT JOIN clients c ON a.client_id = c.id
+       LEFT JOIN vehicules v ON a.vehicle_id = v.id
+       WHERE i.id = ? OR i.appointment_id = ?`,
+      [inspection_id, inspection_id]
+    );
+
+    if (!inspections || inspections.length === 0) {
+      return res.status(404).json({ success: false, message: 'Inspection non trouvée' });
+    }
+
+    const inspection = inspections[0];
+    const realInspectionId = inspection.id;
+
+    // 2. جلب بيانات الوحدات المختلفة بشكل متوازي
+    const [
+      [kilometrage],
+      [scanner],
+      [moteur],
+      [suspension],
+      [tole]
+    ] = await Promise.all([
+      db.query('SELECT * FROM inspection_kilometrage WHERE inspection_id = ?', [realInspectionId]),
+      db.query('SELECT * FROM inspection_scanner WHERE inspection_id = ?', [realInspectionId]),
+      db.query('SELECT * FROM inspection_moteur WHERE inspection_id = ?', [realInspectionId]),
+      db.query('SELECT * FROM inspection_suspension WHERE inspection_id = ?', [realInspectionId]),
+      db.query('SELECT * FROM inspection_tole WHERE inspection_id = ?', [realInspectionId])
+    ]);
+
+    // 3. تجميع الاستجابة
+    res.json({
+      success: true,
+      data: {
+        inspection,
+        kilometrage: kilometrage[0] || null,
+        scanner: scanner[0] || null,
+        moteur: moteur[0] || null,
+        suspension: suspension[0] || null,
+        tole: tole[0] || null
+      }
+    });
+
+  } catch (err) {
+    console.error('❌ getInspectionDetails Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
