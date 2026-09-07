@@ -1,48 +1,5 @@
 const db = require('../config/db');
 
-
-async function ensureInspectionExists(inspectionId, userId) {
-  if (!inspectionId) {
-    throw new Error('inspection_id manquant');
-  }
-
-  if (!userId) {
-    throw new Error('user_id manquant');
-  }
-
-  // 1. هل inspection_id هو ID حقيقي للفحص؟
-  const [existing] = await db.query(
-    'SELECT id FROM inspections WHERE id = ?',
-    [inspectionId]
-  );
-
-  if (existing.length > 0) {
-    return existing[0].id;
-  }
-
-  // 2. هل inspectionId هو appointment_id؟
-  const [byAppt] = await db.query(
-    'SELECT id FROM inspections WHERE appointment_id = ?',
-    [inspectionId]
-  );
-
-  if (byAppt.length > 0) {
-    return byAppt[0].id;
-  }
-
-  // 3. إنشاء Inspection جديد
-  const [result] = await db.query(
-    `INSERT INTO inspections
-      (appointment_id, user_id, created_at)
-     VALUES (?, ?, NOW())`,
-    [inspectionId, userId]
-  );
-
-  return result.insertId;
-}
-
-
-
 exports.getInspectionDetails = async (req, res) => {
   const { inspection_id } = req.params;
 
@@ -107,8 +64,6 @@ exports.getInspectionDetails = async (req, res) => {
   }
 };
 
-
-
 exports.saveKilometrage = async (req, res) => {
   let {
     inspection_id,
@@ -162,8 +117,6 @@ exports.saveKilometrage = async (req, res) => {
   }
 };
 
-
-
 exports.saveMoteur = async (req, res) => {
   const {
     inspection_id,
@@ -211,7 +164,6 @@ exports.saveMoteur = async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 };
-
 
 exports.saveScanner = async (req, res) => {
   const {
@@ -275,8 +227,6 @@ exports.saveScanner = async (req, res) => {
   }
 };
 
-
-
 exports.saveSuspension = async (req, res) => {
   const {
     inspection_id,
@@ -326,8 +276,6 @@ exports.saveSuspension = async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 };
-
-
 
 exports.saveTole = async (req, res) => {
   const {
@@ -415,66 +363,6 @@ exports.getAllInspections = async (req, res) => {
   }
 };
 
-
-
-exports.getToleReportById = async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const query = `
-      SELECT 
-        i.id,
-        i.id AS inspection_id,
-        i.created_at,
-        c.full_name AS client_name,
-        c.phone AS client_phone,
-        v.make AS brand,
-        v.model,
-        v.license_plate AS plate,
-        km.kilometrage_affiche,
-        km.conformite AS km_conformite,
-        sc.dtc_codes,
-        sc.calculateur_status,
-        sc.voyants_allumes,
-        t.elements_ext_json,
-        t.longerons_status, t.longerons_obs,
-        t.traverses_status, t.traverses_obs,
-        t.passage_roues_status, t.passage_roues_obs,
-        t.fond_coffre_status, t.fond_coffre_obs,
-        t.chassis_status, t.chassis_obs,
-        t.optique_status, t.optique_obs,
-        t.vitre_status, t.vitre_obs,
-        t.conclusion_structure,
-        mot.niveau_huile
-      FROM inspections i
-      LEFT JOIN appointments a ON i.appointment_id = a.id
-      LEFT JOIN clients c ON a.client_id = c.id
-      LEFT JOIN vehicules v ON a.vehicle_id = v.id
-      LEFT JOIN inspection_tole t ON i.id = t.inspection_id
-      LEFT JOIN inspection_kilometrage km ON i.id = km.inspection_id
-      LEFT JOIN inspection_scanner sc ON i.id = sc.inspection_id
-      LEFT JOIN inspection_moteur mot ON i.id = mot.inspection_id
-      WHERE i.id = ?
-    `;
-
-    const [rows] = await db.query(query, [id]);
-
-    if (!rows || rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
-    }
-
-    const reportData = rows[0];
-    if (!reportData.niveau_huile) {
-      reportData.niveau_huile = 'Non contrôlé';
-    }
-
-    res.json({ success: true, data: reportData });
-  } catch (err) {
-    console.error('❌ getToleReportById:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
 exports.getToleReport = async (req, res) => {
   const { id } = req.params;
 
@@ -532,3 +420,91 @@ exports.getToleReport = async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
+
+async function ensureInspectionExists(inspectionId, userId) {
+  if (!inspectionId) throw new Error('inspection_id manquant');
+  if (!userId) throw new Error('user_id manquant');
+
+  // 1. هل ID المطروح ينتمي لجدول inspections؟
+  const [existing] = await db.query(
+    'SELECT id FROM inspections WHERE id = ?',
+    [inspectionId]
+  );
+  if (existing.length > 0) return existing[0].id;
+
+  // 2. هل هو appointment_id؟
+  const [byAppt] = await db.query(
+    'SELECT id FROM inspections WHERE appointment_id = ?',
+    [inspectionId]
+  );
+  if (byAppt.length > 0) return byAppt[0].id;
+
+  // 3. إنشاء السجل باستخدام العمود الصحيح user_id الموجود في Railway
+  const [result] = await db.query(
+    `INSERT INTO inspections (appointment_id, user_id, created_at)
+     VALUES (?, ?, NOW())`,
+    [inspectionId, userId]
+  );
+
+  return result.insertId;
+}
+
+exports.getToleReportById = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const query = `
+      SELECT 
+        i.id,
+        i.id AS inspection_id,
+        i.created_at,
+        c.full_name AS client_name,
+        c.phone AS client_phone,
+        v.make AS brand,
+        v.model,
+        v.license_plate AS plate,
+        km.kilometrage_affiche,
+        km.conformite AS km_conformite,
+        sc.dtc_codes,
+        sc.calculateur_status,
+        sc.voyants_allumes,
+        t.elements_ext_json,
+        t.longerons_status, t.longerons_obs,
+        t.traverses_status, t.traverses_obs,
+        t.passage_roues_status, t.passage_roues_obs,
+        t.fond_coffre_status, t.fond_coffre_obs,
+        t.chassis_status, t.chassis_obs,
+        t.optique_status, t.optique_obs,
+        t.vitre_status, t.vitre_obs,
+        t.conclusion_structure,
+        mot.niveau_huile
+      FROM inspections i
+      LEFT JOIN appointments a ON i.appointment_id = a.id
+      LEFT JOIN clients c ON a.client_id = c.id
+      LEFT JOIN vehicules v ON a.vehicle_id = v.id
+      LEFT JOIN inspection_tole t ON i.id = t.inspection_id
+      LEFT JOIN inspection_kilometrage km ON i.id = km.inspection_id
+      LEFT JOIN inspection_scanner sc ON i.id = sc.inspection_id
+      LEFT JOIN inspection_moteur mot ON i.id = mot.inspection_id
+      WHERE i.id = ? OR i.appointment_id = ?
+    `;
+
+    const [rows] = await db.query(query, [id, id]);
+
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
+    }
+
+    const reportData = rows[0];
+    if (!reportData.niveau_huile) {
+      reportData.niveau_huile = 'Non contrôlé';
+    }
+
+    res.json({ success: true, data: reportData });
+  } catch (err) {
+    console.error('❌ getToleReportById:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+exports.getToleReport = exports.getToleReportById;
