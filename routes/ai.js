@@ -2,40 +2,42 @@ const express = require('express');
 const router = express.Router();
 const { GoogleGenAI } = require('@google/genai');
 
-// 1. إعداد الـ Client (تأكدي من كتابة apiKey بحرف K كبير)
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 router.post('/generate-summary', async (req, res) => {
     try {
-        const inspectionData = req.body;
+        const data = req.body;
 
         const prompt = `
-Vous êtes un expert automobile senior chez VERIFCAR. 
-Analysez les données d'inspection suivantes et rédigez une conclusion claire et professionnelle en 3 à 4 phrases (en Français) :
+Vous êtes un expert automobile senior chez VERIFCAR.
+Analyse les données suivantes et génère un objet JSON valide contenant 4 résumés courts et clairs (en Français, max 2 phrases par résumé) :
 
-Données du véhicule:
-- Modèle: ${inspectionData.brand || ''} ${inspectionData.model || ''} (${inspectionData.year || ''})
-- Kilométrage: ${inspectionData.kilometrage_affiche || 'N/A'} KM
-- Défauts Carrosserie: ${JSON.stringify(inspectionData.elements_ext_json || {})}
-- État Structure: Longerons (${inspectionData.longerons_status || 'Conforme'}), Châssis (${inspectionData.chassis_status || 'Conforme'})
-- Conclusion actuelle: ${inspectionData.conclusion_structure || 'Aucune'}
+1. carrosserie_summary: Analyse des éléments extérieurs (Défauts détectés: ${JSON.stringify(data.elements_ext_json || {})}). Si aucun défaut, indiquez que la carrosserie est excellente.
+2. structure_summary: État de la structure (Longerons: ${data.longerons_status || 'Conforme'}, Châssis: ${data.chassis_status || 'Conforme'}, Conclusion: ${data.conclusion_structure || 'Aucun accident'}).
+3. suspension_summary: État des pneus, jantes et soubassement (Corrosion: ${data.corrosion_soubassement ? 'Oui' : 'Non'}, Choc dessous: ${data.traces_choc ? 'Oui' : 'Non'}).
+4. conclusion_generale: Résumé global et conseil rapide pour l'acheteur.
 
-Consignes:
-1. Donnez un résumé global de l'état du véhicule.
-2. Mentionnez s'il y a eu des chocs majeurs ou si la structure est saine.
-3. Donnez un conseil rapide à l'acheteur.
+Format de réponse attendu (JSON uniquement) :
+{
+  "carrosserie_summary": "...",
+  "structure_summary": "...",
+  "suspension_summary": "...",
+  "conclusion_generale": "..."
+}
         `;
 
-        // 2. استدعاء النموذج
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: prompt,
+            config: { responseMimeType: "application/json" }
         });
 
-        res.json({ success: true, summary: response.text });
+        const resultJson = JSON.parse(response.text);
+        res.json({ success: true, data: resultJson });
+
     } catch (error) {
         console.error("Erreur AI:", error);
-        res.status(500).json({ success: false, message: "Erreur lors de la génération du résumé." });
+        res.status(500).json({ success: false, message: "Erreur de génération" });
     }
 });
 
