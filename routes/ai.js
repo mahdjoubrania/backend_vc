@@ -26,11 +26,13 @@ Format JSON strict :
 }
         `;
 
-       
+        // استخدام gemini-2.5-flash بدون كلمة models/
         const response = await ai.models.generateContent({
-            model: 'gemini-1.5-flash',
+            model: 'gemini-2.5-flash',
             contents: prompt,
-            config: { responseMimeType: "application/json" }
+            config: { 
+                responseMimeType: "application/json"
+            }
         });
 
         const resultJson = JSON.parse(response.text);
