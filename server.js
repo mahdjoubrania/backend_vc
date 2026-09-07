@@ -19,6 +19,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 setupSwagger(app);
 
 // Routes
+app.use('/api/ai', require('./routes/ai.js'));
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/admin', require('./routes/admin.routes'));
 app.use('/api/admin', require('./routes/rnd.routes'));
@@ -28,6 +29,6 @@ app.use('/api/inspection', require('./routes/inspection.routes'));
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Swagger UI available at http://localhost:${PORT}/api-docs`);
 });

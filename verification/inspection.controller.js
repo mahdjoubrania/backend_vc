@@ -1,7 +1,5 @@
 const db = require('../config/db');
 
-
-
 exports.saveKilometrage = async (req, res) => {
   let {
     inspection_id,
