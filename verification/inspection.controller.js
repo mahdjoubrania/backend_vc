@@ -445,7 +445,7 @@ exports.getToleReportById = async (req, res) => {
         t.optique_status, t.optique_obs,
         t.vitre_status, t.vitre_obs,
         t.conclusion_structure,
-        mot.status AS niveau_huile
+        mot.niveau_huile
       FROM inspections i
       LEFT JOIN appointments a ON i.appointment_id = a.id
       LEFT JOIN clients c ON a.client_id = c.id
@@ -453,7 +453,7 @@ exports.getToleReportById = async (req, res) => {
       LEFT JOIN inspection_tole t ON i.id = t.inspection_id
       LEFT JOIN inspection_kilometrage km ON i.id = km.inspection_id
       LEFT JOIN inspection_scanner sc ON i.id = sc.inspection_id
-      LEFT JOIN inspection_moteur mot ON (i.id = mot.inspection_id AND mot.element = 'niveau_huile')
+      LEFT JOIN inspection_moteur mot ON i.id = mot.inspection_id
       WHERE i.id = ?
     `;
 
@@ -472,5 +472,63 @@ exports.getToleReportById = async (req, res) => {
   } catch (err) {
     console.error('❌ getToleReportById:', err);
     res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+exports.getToleReport = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // 1. جلب بيانات الفحص مع الموعد والزبون
+    const [inspections] = await db.query(`
+      SELECT 
+        i.*,
+        a.client_name,
+        a.client_phone,
+        a.brand,
+        a.model,
+        a.plate,
+        a.color
+      FROM inspections i
+      LEFT JOIN appointments a ON i.appointment_id = a.id
+      WHERE i.id = ? OR i.appointment_id = ?
+    `, [id, id]);
+
+    if (!inspections || inspections.length === 0) {
+      return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
+    }
+
+    const inspection = inspections[0];
+
+    // 2. جلب بيانات الهيكل الخارجي (inspection_tole)
+    const [toleRows] = await db.query(
+      `SELECT * FROM inspection_tole WHERE inspection_id = ?`,
+      [inspection.id]
+    );
+    const toleData = toleRows[0] || {};
+
+    // 3. جلب بيانات المحرك والماسح الضوئي لإكمال التقرير
+    const [moteurRows] = await db.query(
+      `SELECT * FROM inspection_moteur WHERE inspection_id = ?`,
+      [inspection.id]
+    );
+    const [scannerRows] = await db.query(
+      `SELECT * FROM inspection_scanner WHERE inspection_id = ?`,
+      [inspection.id]
+    );
+
+    // 4. تجميع كافة البيانات في كائن واحد
+    const fullReport = {
+      ...inspection,
+      ...toleData,
+      niveau_huile: moteurRows[0]?.niveau_huile || null,
+      dtc_codes: scannerRows[0]?.dtc_codes || null
+    };
+
+    res.json({ success: true, data: fullReport });
+
+  } catch (error) {
+    console.error('❌ Erreur getToleReport:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 };
