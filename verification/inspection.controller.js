@@ -1,8 +1,6 @@
 const db = require('../config/db');
 
-// ============================================================
-// Helper: التأكد من وجود Inspection
-// ============================================================
+
 async function ensureInspectionExists(inspectionId, userId) {
   if (!inspectionId) {
     throw new Error('inspection_id manquant');
@@ -44,9 +42,7 @@ async function ensureInspectionExists(inspectionId, userId) {
 }
 
 
-// ============================================================
-// 1. جلب كافة تفاصيل الفحص
-// ============================================================
+
 exports.getInspectionDetails = async (req, res) => {
   const { inspection_id } = req.params;
 
@@ -112,9 +108,7 @@ exports.getInspectionDetails = async (req, res) => {
 };
 
 
-// ============================================================
-// 2. حفظ / تحديث الكيلومتراج
-// ============================================================
+
 exports.saveKilometrage = async (req, res) => {
   let {
     inspection_id,
@@ -169,9 +163,7 @@ exports.saveKilometrage = async (req, res) => {
 };
 
 
-// ============================================================
-// 3. حفظ / تحديث المحرك
-// ============================================================
+
 exports.saveMoteur = async (req, res) => {
   const {
     inspection_id,
@@ -190,24 +182,28 @@ exports.saveMoteur = async (req, res) => {
 
     const realInspectionId = await ensureInspectionExists(inspection_id, req.user.id);
 
-    // حذف البيانات القديمة للفحص نفسه وإعادة إدراجها
-    await db.query('DELETE FROM inspection_moteur WHERE inspection_id = ?', [realInspectionId]);
+    const sql = `
+      INSERT INTO inspection_moteur
+        (inspection_id, niveau_huile, fuite_huile, fuite_liquide_refroidissement, bruit_moteur, fumee_echappement, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        niveau_huile = VALUES(niveau_huile),
+        fuite_huile = VALUES(fuite_huile),
+        fuite_liquide_refroidissement = VALUES(fuite_liquide_refroidissement),
+        bruit_moteur = VALUES(bruit_moteur),
+        fumee_echappement = VALUES(fumee_echappement),
+        notes = VALUES(notes)
+    `;
 
-    const items = [
-      ['niveau_huile', niveau_huile, null],
-      ['fuite_huile', fuite_huile ? 'OUI' : 'NON', null],
-      ['fuite_liquide_refroidissement', fuite_liquide_refroidissement ? 'OUI' : 'NON', null],
-      ['bruit_moteur', bruit_moteur ? 'OUI' : 'NON', null],
-      ['fumee_echappement', fumee_echappement, null],
-      ['general_notes', null, notes]
-    ];
-
-    for (const [element, status, observation] of items) {
-      await db.query(
-        `INSERT INTO inspection_moteur (inspection_id, element, status, observation) VALUES (?, ?, ?, ?)`,
-        [realInspectionId, element, status, observation]
-      );
-    }
+    await db.query(sql, [
+      realInspectionId,
+      niveau_huile,
+      fuite_huile ? 1 : 0,
+      fuite_liquide_refroidissement ? 1 : 0,
+      bruit_moteur ? 1 : 0,
+      fumee_echappement,
+      notes
+    ]);
 
     res.json({ success: true, message: 'تم حفظ بيانات المحرك بنجاح' });
   } catch (err) {
@@ -216,9 +212,7 @@ exports.saveMoteur = async (req, res) => {
   }
 };
 
-// ============================================================
-// 4. حفظ / تحديث السكانير
-// ============================================================
+
 exports.saveScanner = async (req, res) => {
   const {
     inspection_id,
@@ -282,9 +276,7 @@ exports.saveScanner = async (req, res) => {
 };
 
 
-// ============================================================
-// 5. حفظ / تحديث نظام التعليق
-// ============================================================
+
 exports.saveSuspension = async (req, res) => {
   const {
     inspection_id,
@@ -336,9 +328,7 @@ exports.saveSuspension = async (req, res) => {
 };
 
 
-// ============================================================
-// 6. حفظ / تحديث الهيكل والرسم والعلامات
-// ============================================================
+
 exports.saveTole = async (req, res) => {
   const {
     inspection_id,
@@ -396,9 +386,7 @@ exports.saveTole = async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 };
-// ============================================================
-// جلب قائمة جميع التقارير للصفحة الرئيسية (reports.html)
-// ============================================================
+
 exports.getAllInspections = async (req, res) => {
   try {
     const query = `
@@ -428,9 +416,7 @@ exports.getAllInspections = async (req, res) => {
 };
 
 
-// ============================================================
-// جلب تفاصيل تقرير الهيكل (Tôle) المخصص للطباعة مع كافة الأجزاء
-// ============================================================
+
 exports.getToleReportById = async (req, res) => {
   const { id } = req.params;
 
