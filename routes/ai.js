@@ -30,23 +30,28 @@ router.post('/generate-summary', async (req, res) => {
         }
 
         // 2. إذا لم يكن متوفراً، طلب التلخيص من Gemini
-        const prompt = `
+        // في ai_2.js
+const prompt = `
 Vous êtes un expert automobile senior chez VERIFCAR.
-Générez un objet JSON contenant 4 résumés bilingues (Français et Arabe ensemble, max 2 phrases par langue) :
+Générez un objet JSON contenant les résumés bilingues (Français / Arabe, max 2 phrases) :
 
-1. carrosserie_summary: Analyse des éléments extérieurs (Défauts: ${JSON.stringify(data.elements_ext_json || {})}).
-2. structure_summary: État de la structure (Longerons: ${data.longerons_status || 'Conforme'}, Châssis: ${data.chassis_status || 'Conforme'}).
-3. suspension_summary: État des pneus, jantes et soubassement (Corrosion: ${data.corrosion_soubassement ? 'Oui' : 'Non'}, Choc dessous: ${data.traces_choc ? 'Oui' : 'Non'}).
-4. conclusion_generale: Bilan global et conseil pour l'acheteur.
+1. carrosserie_summary: Analyse des éléments extérieurs (${JSON.stringify(data.elements_ext_json || {})}).
+2. structure_summary: État de la structure (${data.longerons_status || 'OK'}, ${data.chassis_status || 'OK'}).
+3. suspension_summary: Pneus/Soubassement (Corrosion: ${data.corrosion_soubassement ? 'Oui' : 'Non'}).
+4. moteur_summary: Bilan Moteur (Huile: ${data.niveau_huile || 'N/A'}, Fuite: ${data.fuite_huile ? 'Oui' : 'Non'}, Bruit: ${data.bruit_moteur ? 'Oui' : 'Non'}).
+5. scanner_summary: Diagnostique Scanner (Calculateur: ${data.calculateur_status || 'OK'}, Codes DTC: ${data.dtc_codes || 'Aucun'}, Voyants: ${data.voyants_allumes || 'Aucun'}).
+6. conclusion_generale: Bilan global.
 
 Format JSON strict :
 {
   "carrosserie_summary": "texte FR / نص عربي",
   "structure_summary": "texte FR / نص عربي",
   "suspension_summary": "texte FR / نص عربي",
+  "moteur_summary": "texte FR / نص عربي",
+  "scanner_summary": "texte FR / نص عربي",
   "conclusion_generale": "texte FR / نص عربي"
 }
-        `;
+`;
 
         const response = await ai.models.generateContent({
             model: 'gemini-3.6-flash',

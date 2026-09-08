@@ -448,37 +448,26 @@ exports.getToleReportById = async (req, res) => {
 
   try {
     // 1. جلب بيانات الفحص، الزبون، المركبة، وتقرير الهيكل
-    const query = `
-      SELECT 
-        i.id,
-        i.id AS inspection_id,
-        i.created_at,
-        c.full_name AS client_name,
-        c.phone AS client_phone,
-        v.make AS brand,
-        v.model,
-        v.license_plate AS plate,
-        km.kilometrage_affiche,
-        km.conformite AS km_conformite,
-        t.elements_ext_json,
-        t.longerons_status, t.longerons_obs,
-        t.traverses_status, t.traverses_obs,
-        t.passage_roues_status, t.passage_roues_obs,
-        t.fond_coffre_status, t.fond_coffre_obs,
-        t.chassis_status, t.chassis_obs,
-        t.optique_status, t.optique_obs,
-        t.vitre_status, t.vitre_obs,
-        t.conclusion_structure,
-        mot.niveau_huile
-      FROM inspections i
-      LEFT JOIN appointments a ON i.appointment_id = a.id
-      LEFT JOIN clients c ON a.client_id = c.id
-      LEFT JOIN vehicules v ON a.vehicle_id = v.id
-      LEFT JOIN inspection_tole t ON i.id = t.inspection_id
-      LEFT JOIN inspection_kilometrage km ON i.id = km.inspection_id
-      LEFT JOIN inspection_moteur mot ON i.id = mot.inspection_id
-      WHERE i.id = ? OR i.appointment_id = ?
-    `;
+    // في getToleReportById داخل inspection.controller.js
+const query = `
+  SELECT 
+    i.id, i.created_at,
+    c.full_name AS client_name, c.phone AS client_phone,
+    v.make AS brand, v.model, v.license_plate AS plate, v.vin_number,
+    km.kilometrage_affiche,
+    mot.niveau_huile, mot.fuite_huile, mot.fuite_liquide_refroidissement, mot.bruit_moteur, mot.fumee_echappement, mot.notes AS moteur_notes,
+    sc.calculateur_status, sc.voyants_allumes, sc.dtc_codes, sc.notes AS scanner_notes,
+    t.*
+  FROM inspections i
+  LEFT JOIN appointments a ON i.appointment_id = a.id
+  LEFT JOIN clients c ON a.client_id = c.id
+  LEFT JOIN vehicules v ON a.vehicle_id = v.id
+  LEFT JOIN inspection_kilometrage km ON i.id = km.inspection_id
+  LEFT JOIN inspection_moteur mot ON i.id = mot.inspection_id
+  LEFT JOIN inspection_scanner sc ON i.id = sc.inspection_id
+  LEFT JOIN inspection_tole t ON i.id = t.inspection_id
+  WHERE i.id = ? OR i.appointment_id = ?
+`;
 
     const [rows] = await db.query(query, [id, id]);
 
