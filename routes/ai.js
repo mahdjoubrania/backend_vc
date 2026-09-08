@@ -61,24 +61,28 @@ Format JSON strict :
 
         const resultJson = JSON.parse(response.text);
 
-        // 3. حفظ الملخصات في الجدول الجديد (UPSERT)
-        await db.query(
-            `INSERT INTO inspection_ai_summaries 
-                (inspection_id, carrosserie_summary, structure_summary, suspension_summary, conclusion_generale)
-             VALUES (?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE 
-                carrosserie_summary = VALUES(carrosserie_summary),
-                structure_summary = VALUES(structure_summary),
-                suspension_summary = VALUES(suspension_summary),
-                conclusion_generale = VALUES(conclusion_generale)`,
-            [
-                inspectionId,
-                resultJson.carrosserie_summary,
-                resultJson.structure_summary,
-                resultJson.suspension_summary,
-                resultJson.conclusion_generale
-            ]
-        );
+        // حفظ أو تحديث الملخصات في الجدول
+await db.query(
+    `INSERT INTO inspection_ai_summaries 
+        (inspection_id, carrosserie_summary, structure_summary, suspension_summary, moteur_summary, scanner_summary, conclusion_generale)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE 
+        carrosserie_summary = VALUES(carrosserie_summary),
+        structure_summary = VALUES(structure_summary),
+        suspension_summary = VALUES(suspension_summary),
+        moteur_summary = VALUES(moteur_summary),
+        scanner_summary = VALUES(scanner_summary),
+        conclusion_generale = VALUES(conclusion_generale)`,
+    [
+        inspectionId,
+        resultJson.carrosserie_summary,
+        resultJson.structure_summary,
+        resultJson.suspension_summary,
+        resultJson.moteur_summary,
+        resultJson.scanner_summary,
+        resultJson.conclusion_generale
+    ]
+);
 
         res.json({ success: true, from_cache: false, data: resultJson });
 

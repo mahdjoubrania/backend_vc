@@ -447,30 +447,34 @@ exports.getToleReportById = async (req, res) => {
   const { id } = req.params;
 
   try {
-    // 1. جلب بيانات الفحص، الزبون، المركبة، وتقرير الهيكل
-    // في getToleReportById داخل inspection.controller.js
-// 3. حفظ الملخصات في الجدول الجديد (UPSERT)
-await db.query(
-    `INSERT INTO inspection_ai_summaries 
-        (inspection_id, carrosserie_summary, structure_summary, suspension_summary, moteur_summary, scanner_summary, conclusion_generale)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE 
-        carrosserie_summary = VALUES(carrosserie_summary),
-        structure_summary = VALUES(structure_summary),
-        suspension_summary = VALUES(suspension_summary),
-        moteur_summary = VALUES(moteur_summary),
-        scanner_summary = VALUES(scanner_summary),
-        conclusion_generale = VALUES(conclusion_generale)`,
-    [
-        inspectionId,
-        resultJson.carrosserie_summary,
-        resultJson.structure_summary,
-        resultJson.suspension_summary,
-        resultJson.moteur_summary,
-        resultJson.scanner_summary,
-        resultJson.conclusion_generale
-    ]
-);
+    // 1. الاستعلام الأساسي لتجميع بيانات التقرير
+    const query = `
+      SELECT 
+        i.id, 
+        i.created_at,
+        c.full_name AS client_name, 
+        c.phone AS client_phone,
+        v.make AS brand, 
+        v.model, 
+        v.license_plate AS plate, 
+        v.vin_number,
+        km.kilometrage_affiche,
+        mot.niveau_huile, 
+        mot.fuite_huile, 
+        mot.fuite_liquide_refroidissement, 
+        mot.bruit_moteur, 
+        mot.fumee_echappement, 
+        mot.notes AS moteur_notes,
+        t.*
+      FROM inspections i
+      LEFT JOIN appointments a ON i.appointment_id = a.id
+      LEFT JOIN clients c ON a.client_id = c.id
+      LEFT JOIN vehicules v ON a.vehicle_id = v.id
+      LEFT JOIN inspection_kilometrage km ON i.id = km.inspection_id
+      LEFT JOIN inspection_moteur mot ON i.id = mot.inspection_id
+      LEFT JOIN inspection_tole t ON i.id = t.inspection_id
+      WHERE i.id = ? OR i.appointment_id = ?
+    `;
 
     const [rows] = await db.query(query, [id, id]);
 
@@ -480,7 +484,7 @@ await db.query(
 
     const reportData = rows[0];
 
-    // 2. جلب بيانات الماسح الضوئي بشكل منفصل وآمن
+    // 2. جلب بيانات الماسح الضوئي (Scanner)
     let scannerData = { dtc_codes: null, calculateur_status: 'OK', voyants_allumes: null };
     try {
       const [scRows] = await db.query(
@@ -494,7 +498,7 @@ await db.query(
       console.warn('⚠️ Table inspection_scanner non prête:', scErr.message);
     }
 
-    // 3. الدمج والإرسال
+    // 3. دمج البيانات وإرسالها
     const finalReport = {
       ...reportData,
       ...scannerData,
@@ -502,8 +506,9 @@ await db.query(
     };
 
     res.json({ success: true, data: finalReport });
+
   } catch (err) {
-    console.error('❌ getToleReportById:', err);
+    console.error('❌ getToleReportById Error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 };
