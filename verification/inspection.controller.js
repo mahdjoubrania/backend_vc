@@ -385,11 +385,53 @@ async function ensureInspectionExists(inspectionId, userId) {
   return result.insertId;
 }
 
+exports.saveGeneral = async (req, res) => {
+  const {
+    inspection_id,
+    nombre_cles,
+    rapport_mecanique,
+    equipements_secour
+  } = req.body;
+
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ success: false, error: 'Utilisateur non authentifié' });
+    }
+
+    const realInspectionId = await ensureInspectionExists(inspection_id, req.user.id);
+
+    const sql = `
+      INSERT INTO inspection_general_observations
+        (inspection_id, nombre_cles, rapport_mecanique, equipements_secour)
+      VALUES (?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        nombre_cles = VALUES(nombre_cles),
+        rapport_mecanique = VALUES(rapport_mecanique),
+        equipements_secour = VALUES(equipements_secour)
+    `;
+
+    await db.query(sql, [
+      realInspectionId,
+      nombre_cles || 1,
+      rapport_mecanique || null,
+      equipements_secour || null
+    ]);
+
+    res.json({
+      success: true,
+      message: 'تم حفظ الملاحظات العامة والتقرير الميكانيكي بنجاح'
+    });
+
+  } catch (err) {
+    console.error('❌ saveGeneral:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 exports.getInspectionDetails = async (req, res) => {
   const { inspection_id } = req.params;
 
   try {
-    // 1. جلب البيانات الرئيسية للفحص
     const [inspections] = await db.query(
       `SELECT i.*, 
               c.full_name AS client_name, c.phone AS client_phone,
@@ -409,22 +451,23 @@ exports.getInspectionDetails = async (req, res) => {
     const inspection = inspections[0];
     const realInspectionId = inspection.id;
 
-    // 2. جلب بيانات الوحدات المختلفة بشكل متوازي
+    // جلب بيانات جميع الوحدات بما فيها الجدول الجديد
     const [
       [kilometrage],
       [scanner],
       [moteur],
       [suspension],
-      [tole]
+      [tole],
+      [general]
     ] = await Promise.all([
       db.query('SELECT * FROM inspection_kilometrage WHERE inspection_id = ?', [realInspectionId]),
       db.query('SELECT * FROM inspection_scanner WHERE inspection_id = ?', [realInspectionId]),
       db.query('SELECT * FROM inspection_moteur WHERE inspection_id = ?', [realInspectionId]),
       db.query('SELECT * FROM inspection_suspension WHERE inspection_id = ?', [realInspectionId]),
-      db.query('SELECT * FROM inspection_tole WHERE inspection_id = ?', [realInspectionId])
+      db.query('SELECT * FROM inspection_tole WHERE inspection_id = ?', [realInspectionId]),
+      db.query('SELECT * FROM inspection_general_observations WHERE inspection_id = ?', [realInspectionId])
     ]);
 
-    // 3. تجميع الاستجابة
     res.json({
       success: true,
       data: {
@@ -433,7 +476,8 @@ exports.getInspectionDetails = async (req, res) => {
         scanner: scanner[0] || null,
         moteur: moteur[0] || null,
         suspension: suspension[0] || null,
-        tole: tole[0] || null
+        tole: tole[0] || null,
+        general: general[0] || null
       }
     });
 
@@ -447,7 +491,6 @@ exports.getToleReportById = async (req, res) => {
   const { id } = req.params;
 
   try {
-    // 1. الاستعلام الأساسي لتجميع بيانات التقرير
     const query = `
       SELECT 
         i.id, 
@@ -465,6 +508,9 @@ exports.getToleReportById = async (req, res) => {
         mot.bruit_moteur, 
         mot.fumee_echappement, 
         mot.notes AS moteur_notes,
+        gen.nombre_cles,
+        gen.rapport_mecanique,
+        gen.equipements_secour,
         t.*
       FROM inspections i
       LEFT JOIN appointments a ON i.appointment_id = a.id
@@ -472,6 +518,7 @@ exports.getToleReportById = async (req, res) => {
       LEFT JOIN vehicules v ON a.vehicle_id = v.id
       LEFT JOIN inspection_kilometrage km ON i.id = km.inspection_id
       LEFT JOIN inspection_moteur mot ON i.id = mot.inspection_id
+      LEFT JOIN inspection_general_observations gen ON i.id = gen.inspection_id
       LEFT JOIN inspection_tole t ON i.id = t.inspection_id
       WHERE i.id = ? OR i.appointment_id = ?
     `;
@@ -484,7 +531,6 @@ exports.getToleReportById = async (req, res) => {
 
     const reportData = rows[0];
 
-    // 2. جلب بيانات الماسح الضوئي (Scanner)
     let scannerData = { dtc_codes: null, calculateur_status: 'OK', voyants_allumes: null };
     try {
       const [scRows] = await db.query(
@@ -498,7 +544,6 @@ exports.getToleReportById = async (req, res) => {
       console.warn('⚠️ Table inspection_scanner non prête:', scErr.message);
     }
 
-    // 3. دمج البيانات وإرسالها
     const finalReport = {
       ...reportData,
       ...scannerData,
