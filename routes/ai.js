@@ -30,7 +30,7 @@ router.post('/generate-summary', async (req, res) => {
         }
 
         // 2. إذا لم يكن متوفراً، طلب التلخيص من Gemini
-        // في ai_2.js
+        
 const prompt = `
 Vous êtes un expert automobile senior chez VERIFCAR.
 Générez un objet JSON contenant les résumés bilingues (Français / Arabe, max 2 phrases) :
@@ -90,6 +90,23 @@ await db.query(
         console.error("Erreur AI Server:", error);
         res.status(500).json({ success: false, message: error.message });
     }
+// دالة مساعدة لمعالجة الضغط العالي وإعادة المحاولة تلقائياً
+async function generateContentWithRetry(model, prompt, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await model.generateContent(prompt);
+    } catch (error) {
+      if (error.status === 503 && i < maxRetries - 1) {
+        console.warn(`AI Server busy (503). Retrying in ${(i + 1) * 2}s...`);
+        await new Promise(res => setTimeout(res, (i + 1) * 2000)); // الانتظار قبل إعادة المحاولة
+      } else {
+        throw error;
+      }
+    }
+  }
+}
 });
+
+
 
 module.exports = router;
