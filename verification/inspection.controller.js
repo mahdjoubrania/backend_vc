@@ -299,64 +299,6 @@ exports.getAllInspections = async (req, res) => {
   }
 };
 
-exports.getToleReport = async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    // 1. جلب بيانات الفحص مع الموعد والزبون
-    const [inspections] = await db.query(`
-      SELECT 
-        i.*,
-        a.client_name,
-        a.client_phone,
-        a.brand,
-        a.model,
-        a.plate,
-        a.color
-      FROM inspections i
-      LEFT JOIN appointments a ON i.appointment_id = a.id
-      WHERE i.id = ? OR i.appointment_id = ?
-    `, [id, id]);
-
-    if (!inspections || inspections.length === 0) {
-      return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
-    }
-
-    const inspection = inspections[0];
-
-    // 2. جلب بيانات الهيكل الخارجي (inspection_tole)
-    const [toleRows] = await db.query(
-      `SELECT * FROM inspection_tole WHERE inspection_id = ?`,
-      [inspection.id]
-    );
-    const toleData = toleRows[0] || {};
-
-    // 3. جلب بيانات المحرك والماسح الضوئي لإكمال التقرير
-    const [moteurRows] = await db.query(
-      `SELECT * FROM inspection_moteur WHERE inspection_id = ?`,
-      [inspection.id]
-    );
-    const [scannerRows] = await db.query(
-      `SELECT * FROM inspection_scanner WHERE inspection_id = ?`,
-      [inspection.id]
-    );
-
-    // 4. تجميع كافة البيانات في كائن واحد
-    const fullReport = {
-      ...inspection,
-      ...toleData,
-      niveau_huile: moteurRows[0]?.niveau_huile || null,
-      dtc_codes: scannerRows[0]?.dtc_codes || null
-    };
-
-    res.json({ success: true, data: fullReport });
-
-  } catch (error) {
-    console.error('❌ Erreur getToleReport:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
 async function ensureInspectionExists(inspectionId, userId) {
   if (!inspectionId) throw new Error('inspection_id manquant');
   if (!userId) throw new Error('user_id manquant');
@@ -555,5 +497,70 @@ exports.getToleReportById = async (req, res) => {
   } catch (err) {
     console.error('❌ getToleReportById Error:', err);
     res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+exports.getToleReport = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // 1. Fetch inspection details with client & vehicle info
+    const [inspections] = await db.query(`
+      SELECT 
+        i.*,
+        a.client_name,
+        a.client_phone,
+        a.brand,
+        a.model,
+        a.plate,
+        a.color
+      FROM inspections i
+      LEFT JOIN appointments a ON i.appointment_id = a.id
+      WHERE i.id = ? OR i.appointment_id = ?
+    `, [id, id]);
+
+    if (!inspections || inspections.length === 0) {
+      return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
+    }
+
+    const inspection = inspections[0];
+
+    // 2. Fetch exterior body data
+    const [toleRows] = await db.query(
+      `SELECT * FROM inspection_tole WHERE inspection_id = ?`,
+      [inspection.id]
+    );
+    const toleData = toleRows[0] || {};
+
+    // 3. Fetch engine, scanner, and general observations data
+    const [moteurRows] = await db.query(
+      `SELECT * FROM inspection_moteur WHERE inspection_id = ?`,
+      [inspection.id]
+    );
+    const [scannerRows] = await db.query(
+      `SELECT * FROM inspection_scanner WHERE inspection_id = ?`,
+      [inspection.id]
+    );
+    const [generalRows] = await db.query(
+      `SELECT * FROM inspection_general_observations WHERE inspection_id = ?`,
+      [inspection.id]
+    );
+
+    // 4. Merge all modules into fullReport
+    const fullReport = {
+      ...inspection,
+      ...toleData,
+      niveau_huile: moteurRows[0]?.niveau_huile || null,
+      dtc_codes: scannerRows[0]?.dtc_codes || null,
+      nombre_cles: generalRows[0]?.nombre_cles || null,
+      rapport_mecanique: generalRows[0]?.rapport_mecanique || null,
+      equipements_secour: generalRows[0]?.equipements_secour || null
+    };
+
+    res.json({ success: true, data: fullReport });
+
+  } catch (error) {
+    console.error('❌ Erreur getToleReport:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 };
