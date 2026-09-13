@@ -66,28 +66,33 @@ exports.getAllClients = async (req, res) => {
         c.id, 
         c.full_name, 
         c.phone,
-        COUNT(DISTINCT a.id) as rdv_count,
-        JSON_ARRAYAGG(
-          IF(v.id IS NOT NULL, 
-            JSON_OBJECT(
-              'id', v.id, 
-              'make', COALESCE(v.make, ''), 
-              'model', COALESCE(v.model, ''), 
-              'license_plate', COALESCE(v.license_plate, ''), 
-              'vin_number', COALESCE(v.vin_number, '')
-            ), 
-            NULL
-          )
-        ) as raw_vehicles
+        COALESCE(rdv.rdv_count, 0) as rdv_count,
+        COALESCE(veh.raw_vehicles, JSON_ARRAY()) as raw_vehicles
       FROM clients c
-      LEFT JOIN appointments a ON a.client_id = c.id
-      LEFT JOIN vehicules v ON v.client_id = c.id
-      GROUP BY c.id
+      LEFT JOIN (
+        SELECT client_id, COUNT(*) as rdv_count
+        FROM appointments
+        GROUP BY client_id
+      ) rdv ON rdv.client_id = c.id
+      LEFT JOIN (
+        SELECT client_id,
+          JSON_ARRAYAGG(
+            JSON_OBJECT(
+              'id', id, 
+              'make', COALESCE(make, ''), 
+              'model', COALESCE(model, ''), 
+              'license_plate', COALESCE(license_plate, ''), 
+              'vin_number', COALESCE(vin_number, '')
+            )
+          ) as raw_vehicles
+        FROM vehicules
+        GROUP BY client_id
+      ) veh ON veh.client_id = c.id
       ORDER BY c.id DESC
     `);
 
     const clients = rows.map(c => {
-      // تصفية القيم الفارغة من مصفوفة السيارات
+    
       const vehicles = (c.raw_vehicles || []).filter(v => v !== null);
       const vehicles_info = vehicles.map(v => `${v.make} ${v.model} ${v.license_plate} ${v.vin_number}`).join(' ');
 
