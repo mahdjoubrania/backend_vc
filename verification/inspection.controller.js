@@ -48,7 +48,7 @@ exports.saveKilometrage = async (req, res) => {
 
     res.status(500).json({
       success: false,
-      error: err.message
+      error: 'Erreur serveur. Veuillez réessayer plus tard.'
     });
   }
 };
@@ -97,7 +97,7 @@ exports.saveMoteur = async (req, res) => {
     res.json({ success: true, message: 'تم حفظ بيانات المحرك بنجاح' });
   } catch (err) {
     console.error('❌ saveMoteur:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
@@ -158,7 +158,7 @@ exports.saveScanner = async (req, res) => {
 
     res.status(500).json({
       success: false,
-      error: err.message
+      error: 'Erreur serveur. Veuillez réessayer plus tard.'
     });
   }
 };
@@ -209,7 +209,7 @@ exports.saveSuspension = async (req, res) => {
     res.json({ success: true, message: 'Données de suspension enregistrées avec succès' });
   } catch (err) {
     console.error('❌ saveSuspension:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
@@ -267,7 +267,7 @@ exports.saveTole = async (req, res) => {
     res.json({ success: true, message: 'Données de carrosserie enregistrées avec succès' });
   } catch (err) {
     console.error('❌ saveTole:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
@@ -295,7 +295,7 @@ exports.getAllInspections = async (req, res) => {
     res.json({ success: true, data: rows });
   } catch (err) {
     console.error('❌ getAllInspections:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
@@ -366,7 +366,7 @@ exports.saveGeneral = async (req, res) => {
 
   } catch (err) {
     console.error('❌ saveGeneral:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
@@ -425,7 +425,7 @@ exports.getInspectionDetails = async (req, res) => {
 
   } catch (err) {
     console.error('❌ getInspectionDetails Error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
@@ -496,7 +496,7 @@ exports.getToleReportById = async (req, res) => {
 
   } catch (err) {
     console.error('❌ getToleReportById Error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
@@ -561,6 +561,6 @@ exports.getToleReport = async (req, res) => {
 
   } catch (error) {
     console.error('❌ Erreur getToleReport:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };

@@ -1,5 +1,4 @@
 const db = require('../config/db');
-const bcrypt = require('bcryptjs');
 
 // 6. Enregistrer un véhicule
 exports.createVehicle = async (req, res) => {
@@ -11,7 +10,8 @@ exports.createVehicle = async (req, res) => {
     );
     res.status(201).json({ message: 'Véhicule enregistré', vehicleId: result.insertId });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('Error in createVehicle:', err);
+    res.status(500).json({ message: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
@@ -22,7 +22,8 @@ exports.getClientVehicles = async (req, res) => {
     const [rows] = await db.query('SELECT * FROM vehicules WHERE client_id = ?', [clientId]);
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('Error in getClientVehicles:', err);
+    res.status(500).json({ message: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
@@ -34,7 +35,8 @@ exports.updateVehicle = async (req, res) => {
     await db.query('UPDATE vehicules SET make = COALESCE(?, make), model = COALESCE(?, model), license_plate = COALESCE(?, license_plate), vin_number = COALESCE(?, vin_number) WHERE id = ?', [make, model, licensePlate, vinNumber, vehicleId]);
     res.json({ message: 'Véhicule mis à jour' });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('Error in updateVehicle:', err);
+    res.status(500).json({ message: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
@@ -45,7 +47,8 @@ exports.deleteVehicle = async (req, res) => {
     await db.query('DELETE FROM vehicules WHERE id = ?', [vehicleId]);
     res.json({ message: 'Véhicule supprimé' });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('Error in deleteVehicle:', err);
+    res.status(500).json({ message: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
@@ -57,6 +60,7 @@ exports.transferVehicleOwner = async (req, res) => {
     await db.query('UPDATE vehicules SET client_id = ? WHERE id = ?', [newClientId, vehicleId]);
     res.json({ message: 'Propriétaire transféré' });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('Error in transferVehicleOwner:', err);
+    res.status(500).json({ message: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };

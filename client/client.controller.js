@@ -1,5 +1,4 @@
 const db = require('../config/db');
-const bcrypt = require('bcryptjs');
 
 // 2. Enregistrer un client
 exports.createClient = async (req, res) => {
@@ -11,7 +10,8 @@ exports.createClient = async (req, res) => {
     );
     res.status(201).json({ message: 'Client créé', clientId: result.insertId });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('Error in createClient:', err);
+    res.status(500).json({ message: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
@@ -25,7 +25,8 @@ exports.searchClient = async (req, res) => {
     );
     res.json(rows);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('Error in searchClient:', err);
+    res.status(500).json({ message: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
@@ -40,19 +41,20 @@ exports.updateClient = async (req, res) => {
     );
     res.json({ message: 'Client mis à jour' });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('Error in updateClient:', err);
+    res.status(500).json({ message: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
 // 5. Supprimer un client
-
 exports.deleteClient = async (req, res) => {
   const { clientId } = req.params;
   try {
     await db.query('DELETE FROM clients WHERE id = ?', [clientId]);
     res.json({ message: 'Client supprimé' });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('Error in deleteClient:', err);
+    res.status(500).json({ message: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
 
