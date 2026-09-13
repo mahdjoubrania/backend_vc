@@ -5,7 +5,6 @@ const cors = require('cors');
 const path = require('path');
 const app = express();
 
-
 if (!process.env.JWT_SECRET) {
   console.error('❌ JWT_SECRET manquant dans le fichier .env — arrêt du serveur.');
   process.exit(1);
@@ -13,10 +12,10 @@ if (!process.env.JWT_SECRET) {
 
 const setupSwagger = require('./config/swagger');
 
-const allowedOrigins = ['https://verifcars.netlify.app'];
-if (process.env.NODE_ENV !== 'production') {
-  allowedOrigins.push('http://127.0.0.1:5500');
-}
+const allowedOrigins = [
+  'https://verifcars.netlify.app',
+  'http://127.0.0.1:5500'
+];
 
 app.use(cors({
   origin: allowedOrigins,
@@ -42,4 +41,5 @@ app.use('/api/inspection', require('./routes/inspection.routes'));
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Swagger UI available at http://localhost:${PORT}/api-docs`);
 });
