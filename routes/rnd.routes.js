@@ -16,7 +16,7 @@ router.get('/appointments', requireRole('ADMIN', 'RECEPTION'), adminController.g
 router.get('/appointments/today', requireRole('ADMIN', 'RECEPTION', 'TECHNICIAN', 'TECHNICIEN'), adminController.getTodayAppointments);
 router.post('/appointments', requireRole('ADMIN', 'RECEPTION'), adminController.createAppointment);
 router.put('/appointments/:id', requireRole('ADMIN', 'RECEPTION'), adminController.updateAppointment);
-router.put('/appointments/:id/status', requireRole('ADMIN', 'RECEPTION'), adminController.updateAppointmentStatus);
+router.put('/appointments/:id/status', requireRole('ADMIN', 'RECEPTION', 'TECHNICIAN', 'TECHNICIEN'), adminController.updateAppointmentStatus);
 router.put('/appointments/:id/payment-status', requireRole('ADMIN', 'RECEPTION'), adminController.updatePaymentStatus);
 router.get('/cancelled-appointments', requireRole('ADMIN', 'RECEPTION'), adminController.getCancelledAppointments);
 

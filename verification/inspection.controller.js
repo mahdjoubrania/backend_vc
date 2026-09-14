@@ -276,6 +276,7 @@ exports.getAllInspections = async (req, res) => {
     const query = `
       SELECT 
         i.id,
+        i.status,
         i.created_at,
         c.full_name AS client_name,
         c.phone AS client_phone,
@@ -561,6 +562,44 @@ exports.getToleReport = async (req, res) => {
 
   } catch (error) {
     console.error('❌ Erreur getToleReport:', error);
+    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
+  }
+};
+
+// إنهاء الفحص يدوياً: يحدّث inspections.status وappointments.status معاً
+exports.completeInspection = async (req, res) => {
+  const { inspection_id } = req.params;
+
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ success: false, error: 'Utilisateur non authentifié' });
+    }
+
+    // البحث عن الفحص سواء كان المعرّف inspection_id أو appointment_id
+    const [rows] = await db.query(
+      'SELECT id, appointment_id FROM inspections WHERE id = ? OR appointment_id = ?',
+      [inspection_id, inspection_id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Inspection introuvable. Veuillez enregistrer au moins un module avant de terminer.' });
+    }
+
+    const { id: realInspectionId, appointment_id } = rows[0];
+
+    await db.query(
+      `UPDATE inspections SET status = 'COMPLETED' WHERE id = ?`,
+      [realInspectionId]
+    );
+
+    await db.query(
+      `UPDATE appointments SET status = 'COMPLETED', completed_at = CONVERT_TZ(NOW(), '+00:00', '+01:00') WHERE id = ?`,
+      [appointment_id]
+    );
+
+    res.json({ success: true, message: 'تم إنهاء الفحص بنجاح' });
+  } catch (err) {
+    console.error('❌ completeInspection:', err);
     res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
