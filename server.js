@@ -5,6 +5,8 @@ const cors = require('cors');
 const path = require('path');
 const app = express();
 
+// ⚠️ Le serveur ne doit jamais démarrer sans un secret JWT défini,
+// sinon auth.middleware.js pourrait accepter un secret prévisible.
 if (!process.env.JWT_SECRET) {
   console.error('❌ JWT_SECRET manquant dans le fichier .env — arrêt du serveur.');
   process.exit(1);
@@ -14,6 +16,7 @@ const setupSwagger = require('./config/swagger');
 
 const allowedOrigins = [
   'https://verifcars.netlify.app',
+  'https://cold-bonus-7196.verifcaratelier.workers.dev',
   'http://127.0.0.1:5500'
 ];
 
