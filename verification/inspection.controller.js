@@ -445,6 +445,8 @@ exports.getToleReportById = async (req, res) => {
         v.license_plate AS plate, 
         v.vin_number,
         km.kilometrage_affiche,
+        km.conformite AS km_conformite,
+        km.notes AS km_notes,
         mot.niveau_huile, 
         mot.fuite_huile, 
         mot.fuite_liquide_refroidissement, 
@@ -454,7 +456,23 @@ exports.getToleReportById = async (req, res) => {
         gen.nombre_cles,
         gen.rapport_mecanique,
         gen.equipements_secour,
-        t.*
+        susp.usure_pneu_avg, susp.obs_pneu_avg,
+        susp.usure_pneu_avd, susp.obs_pneu_avd,
+        susp.usure_pneu_arg, susp.obs_pneu_arg,
+        susp.usure_pneu_ard, susp.obs_pneu_ard,
+        susp.jante_avg, susp.jante_avd, susp.jante_arg, susp.jante_ard,
+        susp.corrosion_soubassement, susp.traces_choc,
+        susp.notes AS suspension_notes,
+        t.elements_ext_json,
+        t.longerons_status, t.longerons_obs,
+        t.traverses_status, t.traverses_obs,
+        t.passage_roues_status, t.passage_roues_obs,
+        t.fond_coffre_status, t.fond_coffre_obs,
+        t.chassis_status, t.chassis_obs,
+        t.optique_status, t.optique_obs,
+        t.vitre_status, t.vitre_obs,
+        t.conclusion_structure,
+        t.notes AS tole_notes
       FROM inspections i
       LEFT JOIN appointments a ON i.appointment_id = a.id
       LEFT JOIN clients c ON a.client_id = c.id
@@ -462,6 +480,7 @@ exports.getToleReportById = async (req, res) => {
       LEFT JOIN inspection_kilometrage km ON i.id = km.inspection_id
       LEFT JOIN inspection_moteur mot ON i.id = mot.inspection_id
       LEFT JOIN inspection_general_observations gen ON i.id = gen.inspection_id
+      LEFT JOIN inspection_suspension susp ON i.id = susp.inspection_id
       LEFT JOIN inspection_tole t ON i.id = t.inspection_id
       WHERE i.id = ? OR i.appointment_id = ?
     `;
@@ -474,10 +493,10 @@ exports.getToleReportById = async (req, res) => {
 
     const reportData = rows[0];
 
-    let scannerData = { dtc_codes: null, calculateur_status: 'OK', voyants_allumes: null };
+    let scannerData = { dtc_codes: null, calculateur_status: 'OK', voyants_allumes: null, scanner_notes: null };
     try {
       const [scRows] = await db.query(
-        'SELECT dtc_codes, calculateur_status, voyants_allumes FROM inspection_scanner WHERE inspection_id = ?',
+        'SELECT dtc_codes, calculateur_status, voyants_allumes, notes AS scanner_notes FROM inspection_scanner WHERE inspection_id = ?',
         [reportData.id]
       );
       if (scRows.length > 0) {
