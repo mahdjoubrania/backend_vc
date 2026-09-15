@@ -107,14 +107,7 @@ Générez un objet JSON contenant les résumés bilingues (Français / Arabe, ma
             console.error("AI Generation Failed, using fallback response:", aiError.message);
             
             // استجابة احتياطية تلقائية في حال تعذر الاتصال بـ Gemini
-            resultJson = {
-                carrosserie_summary: "Inspection carrosserie effectuée. / تم فحص الهيكل الخارجي.",
-                structure_summary: `Structure: ${data.chassis_status || 'OK'}. / إطار السيارة: ${data.chassis_status || 'سليم'}.`,
-                suspension_summary: "Contrôle des suspensions effectué. / تم فحص نظام التعليق.",
-                moteur_summary: `Moteur: Huile (${data.niveau_huile || 'N/A'}). / المحرك: مستوى الزيت (${data.niveau_huile || 'غير محدد'}).`,
-                scanner_summary: `Scanner: ${data.dtc_codes || 'Aucun code'}. / التشخيص الإلكتروني: ${data.dtc_codes || 'لا توجد أخطاء'}.`,
-                conclusion_generale: "Rapport généré sur la base des données d'inspection. / تم إنشاؤه بناءً على بيانات الفحص المباشرة."
-            };
+            resultJson = buildDataDrivenFallback(data);
         }
 
         // 4. حفظ النتائج في قاعدة البيانات
@@ -151,5 +144,73 @@ Générez un objet JSON contenant les résumés bilingues (Français / Arabe, ma
         });
     }
 });
+
+// دالة احتياطية تبني نصوص وصفية حقيقية من بيانات الفحص الفعلية
+// (تُستخدم فقط لو فشل الاتصال بـ Gemini، عشان النص يبقى مفيد ودقيق)
+function buildDataDrivenFallback(data) {
+    // --- 1. الهيكل والتصادم (Structure) ---
+    const structElements = [
+        { key: 'longerons', fr: 'Longerons' },
+        { key: 'traverses', fr: 'Traverses' },
+        { key: 'passage_roues', fr: 'Passage de roues' },
+        { key: 'fond_coffre', fr: 'Fond coffre' },
+        { key: 'chassis', fr: 'Châssis' },
+        { key: 'optique', fr: 'Optique' },
+        { key: 'vitre', fr: 'Vitre' }
+    ];
+    const structDefauts = structElements
+        .filter(el => data[el.key + '_status'] === 'Défaut')
+        .map(el => data[el.key + '_obs'] ? `${el.fr} (${data[el.key + '_obs']})` : el.fr);
+
+    const carrosserie_summary = structDefauts.length > 0
+        ? `Défauts structurels détectés sur : ${structDefauts.join(', ')}. / تم رصد أعطال هيكلية في: ${structDefauts.join('، ')}.`
+        : `Aucun défaut structurel détecté sur les éléments contrôlés. / لم يُرصد أي خلل هيكلي.`;
+
+    const structure_summary = `Conclusion structurelle : ${data.conclusion_structure || 'Aucun accident détecté'}. / الخلاصة الهيكلية: ${data.conclusion_structure || 'لم يتم كشف أي حادث'}.`;
+
+    // --- 2. التعليق والإطارات (Suspension) ---
+    const tirePositions = [
+        { key: 'avg', fr: 'Avant Gauche' },
+        { key: 'avd', fr: 'Avant Droit' },
+        { key: 'arg', fr: 'Arrière Gauche' },
+        { key: 'ard', fr: 'Arrière Droit' }
+    ];
+    const tireDefauts = tirePositions.filter(p => data['usure_pneu_' + p.key] === 'Défaut').map(p => p.fr);
+    const janteDefauts = tirePositions.filter(p => data['jante_' + p.key] === 'Défaut').map(p => p.fr);
+
+    let suspensionParts = [];
+    if (tireDefauts.length > 0) suspensionParts.push(`pneus défectueux (${tireDefauts.join(', ')})`);
+    if (janteDefauts.length > 0) suspensionParts.push(`jantes défectueuses (${janteDefauts.join(', ')})`);
+    if (data.corrosion_soubassement) suspensionParts.push('corrosion du soubassement');
+    if (data.traces_choc) suspensionParts.push('traces de choc sous véhicule');
+
+    const suspension_summary = suspensionParts.length > 0
+        ? `Anomalies détectées : ${suspensionParts.join(', ')}. / تم رصد: ${suspensionParts.join('، ')}.`
+        : `Suspension et pneumatiques conformes, aucune anomalie détectée. / نظام التعليق والإطارات سليمة.`;
+
+    // --- 3. المحرك (Moteur) ---
+    let moteurParts = [];
+    if (data.fuite_huile) moteurParts.push('fuite d\'huile détectée');
+    if (data.fuite_liquide_refroidissement) moteurParts.push('fuite de liquide de refroidissement détectée');
+    if (data.bruit_moteur) moteurParts.push('bruit moteur anormal');
+    if (data.fumee_echappement && data.fumee_echappement.toUpperCase() !== 'AUCUNE') moteurParts.push(`fumée d'échappement (${data.fumee_echappement})`);
+
+    const moteur_summary = moteurParts.length > 0
+        ? `Niveau d'huile ${data.niveau_huile || 'non spécifié'}. Anomalies : ${moteurParts.join(', ')}. / مستوى الزيت ${data.niveau_huile || 'غير محدد'}. ملاحظات: ${moteurParts.join('، ')}.`
+        : `Niveau d'huile ${data.niveau_huile || 'non spécifié'}, aucune fuite ni bruit anormal détecté. / مستوى الزيت ${data.niveau_huile || 'غير محدد'}، بدون أي تسريب أو صوت غير طبيعي.`;
+
+    // --- 4. السكانر (Scanner) ---
+    const scanner_summary = (data.dtc_codes && data.dtc_codes.trim() !== '')
+        ? `Calculateur: ${data.calculateur_status || 'OK'}. Codes DTC détectés : ${data.dtc_codes}. / حالة الكمبيوتر: ${data.calculateur_status || 'سليم'}. أكواد أعطال مسجلة: ${data.dtc_codes}.`
+        : `Calculateur: ${data.calculateur_status || 'OK'}, aucun code défaut détecté. / حالة الكمبيوتر: ${data.calculateur_status || 'سليم'}، بدون أي كود عطل.`;
+
+    // --- 5. الخلاصة العامة ---
+    const totalDefauts = structDefauts.length + tireDefauts.length + janteDefauts.length + moteurParts.length + (data.dtc_codes ? 1 : 0);
+    const conclusion_generale = totalDefauts > 0
+        ? `Véhicule présentant ${totalDefauts} point(s) d'attention répartis sur les différents systèmes contrôlés. Voir détails par section. / السيارة فيها ${totalDefauts} نقطة تحتاج انتباه موزعة على الأنظمة المفحوصة، راجع التفاصيل بكل قسم.`
+        : `Aucune anomalie majeure détectée sur l'ensemble des systèmes contrôlés. / لا توجد ملاحظات جوهرية على كل الأنظمة المفحوصة.`;
+
+    return { carrosserie_summary, structure_summary, suspension_summary, moteur_summary, scanner_summary, conclusion_generale };
+}
 
 module.exports = router;
