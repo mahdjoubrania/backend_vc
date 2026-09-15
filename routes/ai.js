@@ -58,7 +58,14 @@ router.post('/generate-summary', verifyToken, async (req, res) => {
 Vous êtes un expert automobile senior chez VERIFCAR.
 RÈGLE STRICTE ET OBLIGATOIRE : Votre rôle est strictement TECHNIQUE et OBJECTIF. Ne donnez JAMAIS d'avis d'achat ou de recommandation d'achat. Contentez-vous de décrire l'état constaté du véhicule sans inciter à l'achat ou au refus.
 
-Générez un objet JSON contenant les résumés bilingues (Français / Arabe, max 2 phrases par champ) :
+Générez un objet JSON contenant des résumés STRICTEMENT BILINGUES.
+
+RÈGLE DE FORMAT OBLIGATOIRE POUR CHAQUE CHAMP (sans aucune exception) :
+Chaque champ doit contenir EXACTEMENT une phrase en français, suivie de " / ", suivie de la traduction EXACTE de cette même phrase en arabe, dans une seule et même chaîne de texte.
+Format exact à respecter : "Phrase en français ici. / الترجمة العربية للجملة هنا."
+Ne réponds JAMAIS avec une seule langue (ni français seul, ni arabe seul) — les deux langues doivent TOUJOURS apparaître ensemble dans le même champ, max 2 phrases par langue.
+
+Champs à générer :
 
 1. carrosserie_summary: Analyse de l'état structurel externe (Longerons: ${data.longerons_status || 'Conforme'}, Traverses: ${data.traverses_status || 'Conforme'}, Optique: ${data.optique_status || 'Conforme'}, Vitres: ${data.vitre_status || 'Conforme'}, Conclusion: ${data.conclusion_structure || 'Aucun accident détecté'}).
 2. structure_summary: État de la structure (${data.longerons_status || 'OK'}, ${data.chassis_status || 'OK'}).
