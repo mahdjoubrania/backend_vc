@@ -170,7 +170,10 @@ exports.saveSuspension = async (req, res) => {
     usure_pneu_avd, obs_pneu_avd,
     usure_pneu_arg, obs_pneu_arg,
     usure_pneu_ard, obs_pneu_ard,
-    jante_avg, jante_avd, jante_arg, jante_ard,
+    jante_avg, jante_avg_obs,
+    jante_avd, jante_avd_obs,
+    jante_arg, jante_arg_obs,
+    jante_ard, jante_ard_obs,
     corrosion_soubassement, traces_choc,
     notes
   } = req.body;
@@ -191,9 +194,12 @@ exports.saveSuspension = async (req, res) => {
         usure_pneu_avd, obs_pneu_avd,
         usure_pneu_arg, obs_pneu_arg,
         usure_pneu_ard, obs_pneu_ard,
-        jante_avg, jante_avd, jante_arg, jante_ard,
+        jante_avg, jante_avg_obs,
+        jante_avd, jante_avd_obs,
+        jante_arg, jante_arg_obs,
+        jante_ard, jante_ard_obs,
         corrosion_soubassement, traces_choc, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     await db.query(query, [
@@ -202,7 +208,10 @@ exports.saveSuspension = async (req, res) => {
       usure_pneu_avd || 'Conforme', obs_pneu_avd || null,
       usure_pneu_arg || 'Conforme', obs_pneu_arg || null,
       usure_pneu_ard || 'Conforme', obs_pneu_ard || null,
-      jante_avg || 'Conforme', jante_avd || 'Conforme', jante_arg || 'Conforme', jante_ard || 'Conforme',
+      jante_avg || 'Conforme', jante_avg_obs || null,
+      jante_avd || 'Conforme', jante_avd_obs || null,
+      jante_arg || 'Conforme', jante_arg_obs || null,
+      jante_ard || 'Conforme', jante_ard_obs || null,
       corrosion_soubassement ? 1 : 0, traces_choc ? 1 : 0, notes || null
     ]);
 
@@ -460,7 +469,10 @@ exports.getToleReportById = async (req, res) => {
         susp.usure_pneu_avd, susp.obs_pneu_avd,
         susp.usure_pneu_arg, susp.obs_pneu_arg,
         susp.usure_pneu_ard, susp.obs_pneu_ard,
-        susp.jante_avg, susp.jante_avd, susp.jante_arg, susp.jante_ard,
+        susp.jante_avg, susp.jante_avg_obs,
+        susp.jante_avd, susp.jante_avd_obs,
+        susp.jante_arg, susp.jante_arg_obs,
+        susp.jante_ard, susp.jante_ard_obs,
         susp.corrosion_soubassement, susp.traces_choc,
         susp.notes AS suspension_notes,
         t.elements_ext_json,
