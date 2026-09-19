@@ -17,7 +17,8 @@ const setupSwagger = require('./config/swagger');
 const allowedOrigins = [
   'https://verifcars.netlify.app',
   'https://cold-bonus-7196.verifcaratelier.workers.dev',
-  'http://127.0.0.1:5500'
+  'http://127.0.0.1:5500',
+  'http://localhost:51173'
 ];
 
 app.use(cors({
