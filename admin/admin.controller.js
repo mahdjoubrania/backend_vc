@@ -2,12 +2,13 @@ const db = require('../config/db');
 const bcrypt = require('bcryptjs');
 
 const ALLOWED_ROLES = ['ADMIN', 'RECEPTION', 'TECHNICIAN'];
+const VALID_MODULE_KEYS = ['scanner', 'moteur', 'suspension', 'tole', 'kilometrage', 'general', 'reports'];
 
 // 1. Récupérer tous les utilisateurs
 exports.getAllUsers = async (req, res) => {
   try {
     const [users] = await db.query(
-      'SELECT id, full_name AS fullName, phone, role, is_active AS isActive, created_at FROM users ORDER BY id DESC'
+      'SELECT id, full_name AS fullName, phone, role, is_active AS isActive, allowed_modules AS allowedModules, created_at FROM users ORDER BY id DESC'
     );
     res.json(users);
   } catch (error) {
@@ -59,7 +60,7 @@ exports.createUser = async (req, res) => {
 // 3. Modifier les informations d'un utilisateur
 exports.updateUserRole = async (req, res) => {
   const { userId } = req.params;
-  const { fullName, phone, role, password, isActive } = req.body;
+  const { fullName, phone, role, password, isActive, allowedModules } = req.body;
 
   try {
     let query = 'UPDATE users SET ';
@@ -91,6 +92,17 @@ exports.updateUserRole = async (req, res) => {
       const hashedPassword = await bcrypt.hash(password, salt);
       query += 'password_hash = ?, ';
       queryParams.push(hashedPassword);
+    }
+    if (allowedModules !== undefined) {
+      let finalAllowedModules = null;
+      if (allowedModules !== null) {
+        if (!Array.isArray(allowedModules) || allowedModules.some(m => !VALID_MODULE_KEYS.includes(m))) {
+          return res.status(400).json({ message: 'Modules de permission invalides fournis.' });
+        }
+        finalAllowedModules = allowedModules;
+      }
+      query += 'allowed_modules = ?, ';
+      queryParams.push(finalAllowedModules === null ? null : JSON.stringify(finalAllowedModules));
     }
 
     // إزالة الفاصلة الأخيرة إذا تم تعديل أي حقل

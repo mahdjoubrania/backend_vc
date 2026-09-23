@@ -23,9 +23,10 @@ exports.saveKilometrage = async (req, res) => {
 
     const sql = `
       INSERT INTO inspection_kilometrage
-        (inspection_id, kilometrage_affiche, conformite, notes)
-      VALUES (?, ?, ?, ?)
+        (inspection_id, technician_id, kilometrage_affiche, conformite, notes)
+      VALUES (?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
+        technician_id = VALUES(technician_id),
         kilometrage_affiche = VALUES(kilometrage_affiche),
         conformite = VALUES(conformite),
         notes = VALUES(notes)
@@ -33,6 +34,7 @@ exports.saveKilometrage = async (req, res) => {
 
     await db.query(sql, [
       inspection_id,
+      req.user.id,
       kilometrage_affiche,
       conformite,
       notes
@@ -73,9 +75,10 @@ exports.saveMoteur = async (req, res) => {
 
     const sql = `
       INSERT INTO inspection_moteur
-        (inspection_id, niveau_huile, fuite_huile, fuite_liquide_refroidissement, bruit_moteur, fumee_echappement, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (inspection_id, technician_id, niveau_huile, fuite_huile, fuite_liquide_refroidissement, bruit_moteur, fumee_echappement, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
+        technician_id = VALUES(technician_id),
         niveau_huile = VALUES(niveau_huile),
         fuite_huile = VALUES(fuite_huile),
         fuite_liquide_refroidissement = VALUES(fuite_liquide_refroidissement),
@@ -86,6 +89,7 @@ exports.saveMoteur = async (req, res) => {
 
     await db.query(sql, [
       realInspectionId,
+      req.user.id,
       niveau_huile,
       fuite_huile ? 1 : 0,
       fuite_liquide_refroidissement ? 1 : 0,
@@ -127,13 +131,15 @@ exports.saveScanner = async (req, res) => {
       INSERT INTO inspection_scanner
         (
           inspection_id,
+          technician_id,
           calculateur_status,
           voyants_allumes,
           dtc_codes,
           notes
         )
-      VALUES (?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
+        technician_id = VALUES(technician_id),
         calculateur_status = VALUES(calculateur_status),
         voyants_allumes = VALUES(voyants_allumes),
         dtc_codes = VALUES(dtc_codes),
@@ -142,6 +148,7 @@ exports.saveScanner = async (req, res) => {
 
     await db.query(sql, [
       realInspectionId,
+      req.user.id,
       calculateur_status,
       voyants_allumes,
       dtc_codes,
@@ -189,7 +196,7 @@ exports.saveSuspension = async (req, res) => {
 
     const query = `
       INSERT INTO inspection_suspension (
-        inspection_id,
+        inspection_id, technician_id,
         usure_pneu_avg, obs_pneu_avg,
         usure_pneu_avd, obs_pneu_avd,
         usure_pneu_arg, obs_pneu_arg,
@@ -199,11 +206,11 @@ exports.saveSuspension = async (req, res) => {
         jante_arg, jante_arg_obs,
         jante_ard, jante_ard_obs,
         corrosion_soubassement, traces_choc, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     await db.query(query, [
-      realInspectionId,
+      realInspectionId, req.user.id,
       usure_pneu_avg || 'Conforme', obs_pneu_avg || null,
       usure_pneu_avd || 'Conforme', obs_pneu_avd || null,
       usure_pneu_arg || 'Conforme', obs_pneu_arg || null,
@@ -247,7 +254,7 @@ exports.saveTole = async (req, res) => {
 
     const query = `
       INSERT INTO inspection_tole (
-        inspection_id, elements_ext_json,
+        inspection_id, technician_id, elements_ext_json,
         longerons_status, longerons_obs,
         traverses_status, traverses_obs,
         passage_roues_status, passage_roues_obs,
@@ -256,11 +263,12 @@ exports.saveTole = async (req, res) => {
         optique_status, optique_obs,
         vitre_status, vitre_obs,
         conclusion_structure, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     await db.query(query, [
       realInspectionId,
+      req.user.id,
       JSON.stringify(elements_ext_json || {}),
       longerons_status || 'Conforme', longerons_obs || null,
       traverses_status || 'Conforme', traverses_obs || null,
@@ -354,9 +362,10 @@ exports.saveGeneral = async (req, res) => {
 
     const sql = `
       INSERT INTO inspection_general_observations
-        (inspection_id, nombre_cles, rapport_mecanique, equipements_secour)
-      VALUES (?, ?, ?, ?)
+        (inspection_id, technician_id, nombre_cles, rapport_mecanique, equipements_secour)
+      VALUES (?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
+        technician_id = VALUES(technician_id),
         nombre_cles = VALUES(nombre_cles),
         rapport_mecanique = VALUES(rapport_mecanique),
         equipements_secour = VALUES(equipements_secour)
@@ -364,6 +373,7 @@ exports.saveGeneral = async (req, res) => {
 
     await db.query(sql, [
       realInspectionId,
+      req.user.id,
       nombre_cles || 1,
       rapport_mecanique || null,
       equipements_secour || null
