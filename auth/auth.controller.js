@@ -1,3 +1,4 @@
+
 const db = require('../config/db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -55,7 +56,7 @@ exports.login = async (req, res) => {
     phone: user.phone,
     role: user.role
   },
-  process.env.JWT_SECRET || 'fallback_secret_key_change_in_production',
+  process.env.JWT_SECRET,
   {
     expiresIn: '8h'
   }
@@ -73,5 +74,28 @@ exports.login = async (req, res) => {
     res.status(500).json({
       message: 'Erreur serveur. Veuillez réessayer plus tard.'
     });
+  }
+};
+exports.getMe = async (req, res) => {
+  try {
+    const [users] = await db.query(
+      `SELECT id,
+              full_name AS fullName,
+              phone,
+              role,
+              allowed_modules AS allowedModules
+       FROM users
+       WHERE id = ?`,
+      [req.user.id]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({ success: false, message: 'Utilisateur introuvable.' });
+    }
+
+    res.json({ success: true, data: users[0] });
+  } catch (error) {
+    console.error('getMe error:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
