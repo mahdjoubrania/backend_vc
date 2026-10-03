@@ -131,11 +131,86 @@ exports.getDashboardSummary = async (req, res) => {
     });
     const inspectionTypes = Object.entries(typeCounts).map(([label, count]) => ({ label, count }));
 
+    // أداء التقنيين: عدد الوحدات المنفَّذة فعلياً لكل تقني، عبر الجداول الستة مجتمعة
+    const [moduleCounts] = await db.query(`
+      SELECT technician_id, COUNT(*) AS count FROM (
+        SELECT technician_id FROM inspection_scanner WHERE technician_id IS NOT NULL
+        UNION ALL
+        SELECT technician_id FROM inspection_moteur WHERE technician_id IS NOT NULL
+        UNION ALL
+        SELECT technician_id FROM inspection_suspension WHERE technician_id IS NOT NULL
+        UNION ALL
+        SELECT technician_id FROM inspection_tole WHERE technician_id IS NOT NULL
+        UNION ALL
+        SELECT technician_id FROM inspection_kilometrage WHERE technician_id IS NOT NULL
+        UNION ALL
+        SELECT technician_id FROM inspection_general_observations WHERE technician_id IS NOT NULL
+      ) AS all_modules
+      GROUP BY technician_id
+      ORDER BY count DESC
+    `);
+
+    let technicianPerformance = [];
+    if (moduleCounts.length > 0) {
+      const technicianIds = moduleCounts.map(r => r.technician_id);
+      const [techRows] = await db.query(
+        `SELECT id, full_name FROM users WHERE id IN (${technicianIds.map(() => '?').join(',')})`,
+        technicianIds
+      );
+      const nameById = {};
+      techRows.forEach(t => { nameById[t.id] = t.full_name; });
+
+      technicianPerformance = moduleCounts.map(r => ({
+        technicianId: r.technician_id,
+        technicianName: nameById[r.technician_id] || `Technicien #${r.technician_id}`,
+        modulesCompleted: r.count
+      }));
+    }
+
+    // تنبيهات تشغيلية: 1) مواعيد بالورشة تجاوزت الساعة فعلياً (من started_at الحقيقي)
+    const [overdueWorkshop] = await db.query(`
+      SELECT 
+        a.id, 
+        c.full_name AS client_name,
+        COALESCE(NULLIF(TRIM(CONCAT(COALESCE(v.make,''), ' ', COALESCE(v.model,''))), ''), 'Véhicule') AS vehicle_name,
+        a.started_at,
+        TIMESTAMPDIFF(MINUTE, a.started_at, CONVERT_TZ(NOW(), '+00:00', '+01:00')) AS minutesElapsed
+      FROM appointments a
+      LEFT JOIN clients c ON a.client_id = c.id
+      LEFT JOIN vehicules v ON a.vehicle_id = v.id
+      WHERE a.status IN ('IN_WORKSHOP', 'IN_PROGRESS')
+        AND a.started_at IS NOT NULL
+        AND TIMESTAMPDIFF(MINUTE, a.started_at, CONVERT_TZ(NOW(), '+00:00', '+01:00')) > 60
+      ORDER BY minutesElapsed DESC
+      LIMIT 10
+    `);
+
+    // تنبيهات تشغيلية: 2) فحوصات مكتملة لكن فيها رصيد غير محصّل
+    const [unpaidCompleted] = await db.query(`
+      SELECT 
+        a.id, 
+        c.full_name AS client_name,
+        COALESCE(NULLIF(TRIM(CONCAT(COALESCE(v.make,''), ' ', COALESCE(v.model,''))), ''), 'Véhicule') AS vehicle_name,
+        a.total_amount, a.versement,
+        (a.total_amount - a.versement) AS remaining
+      FROM appointments a
+      LEFT JOIN clients c ON a.client_id = c.id
+      LEFT JOIN vehicules v ON a.vehicle_id = v.id
+      WHERE a.status = 'COMPLETED'
+        AND (a.total_amount - a.versement) > 0
+      ORDER BY remaining DESC
+      LIMIT 10
+    `);
+
+    const alerts = { overdueWorkshop, unpaidCompleted };
+
     res.json({
       users: userCounts[0] || { totalUsers: 0, receptionCount: 0, techCount: 0, adminCount: 0 },
       todayStats,
       revenue: revenueData || [],
-      inspectionTypes: inspectionTypes || []
+      inspectionTypes: inspectionTypes || [],
+      technicianPerformance,
+      alerts
     });
   } catch (error) {
     console.error('Dashboard Error:', error);
