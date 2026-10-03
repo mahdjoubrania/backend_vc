@@ -466,15 +466,18 @@ exports.getToleReportById = async (req, res) => {
         km.kilometrage_affiche,
         km.conformite AS km_conformite,
         km.notes AS km_notes,
+        km.technician_id AS kilometrage_technician_id,
         mot.niveau_huile, 
         mot.fuite_huile, 
         mot.fuite_liquide_refroidissement, 
         mot.bruit_moteur, 
         mot.fumee_echappement, 
         mot.notes AS moteur_notes,
+        mot.technician_id AS moteur_technician_id,
         gen.nombre_cles,
         gen.rapport_mecanique,
         gen.equipements_secour,
+        gen.technician_id AS general_technician_id,
         susp.usure_pneu_avg, susp.obs_pneu_avg,
         susp.usure_pneu_avd, susp.obs_pneu_avd,
         susp.usure_pneu_arg, susp.obs_pneu_arg,
@@ -485,6 +488,7 @@ exports.getToleReportById = async (req, res) => {
         susp.jante_ard, susp.jante_ard_obs,
         susp.corrosion_soubassement, susp.traces_choc,
         susp.notes AS suspension_notes,
+        susp.technician_id AS suspension_technician_id,
         t.elements_ext_json,
         t.longerons_status, t.longerons_obs,
         t.traverses_status, t.traverses_obs,
@@ -494,7 +498,8 @@ exports.getToleReportById = async (req, res) => {
         t.optique_status, t.optique_obs,
         t.vitre_status, t.vitre_obs,
         t.conclusion_structure,
-        t.notes AS tole_notes
+        t.notes AS tole_notes,
+        t.technician_id AS tole_technician_id
       FROM inspections i
       LEFT JOIN appointments a ON i.appointment_id = a.id
       LEFT JOIN clients c ON a.client_id = c.id
@@ -515,10 +520,10 @@ exports.getToleReportById = async (req, res) => {
 
     const reportData = rows[0];
 
-    let scannerData = { dtc_codes: null, calculateur_status: 'OK', voyants_allumes: null, scanner_notes: null };
+    let scannerData = { dtc_codes: null, calculateur_status: 'OK', voyants_allumes: null, scanner_notes: null, scanner_technician_id: null };
     try {
       const [scRows] = await db.query(
-        'SELECT dtc_codes, calculateur_status, voyants_allumes, notes AS scanner_notes FROM inspection_scanner WHERE inspection_id = ?',
+        'SELECT dtc_codes, calculateur_status, voyants_allumes, notes AS scanner_notes, technician_id AS scanner_technician_id FROM inspection_scanner WHERE inspection_id = ?',
         [reportData.id]
       );
       if (scRows.length > 0) {
@@ -528,11 +533,39 @@ exports.getToleReportById = async (req, res) => {
       console.warn('⚠️ Table inspection_scanner non prête:', scErr.message);
     }
 
-    const finalReport = {
+    let finalReport = {
       ...reportData,
       ...scannerData,
       niveau_huile: reportData.niveau_huile || 'Non contrôlé'
     };
+
+    // جلب أسماء التقنيين الذين نفّذوا كل وحدة (دفعة واحدة، بدون أي JOIN إضافي بالاستعلام الرئيسي)
+    const technicianIdFields = [
+      ['scanner_technician_id', 'scanner_technician_name'],
+      ['moteur_technician_id', 'moteur_technician_name'],
+      ['suspension_technician_id', 'suspension_technician_name'],
+      ['tole_technician_id', 'tole_technician_name'],
+      ['kilometrage_technician_id', 'kilometrage_technician_name'],
+      ['general_technician_id', 'general_technician_name']
+    ];
+    const distinctIds = [...new Set(
+      technicianIdFields.map(([idField]) => finalReport[idField]).filter(Boolean)
+    )];
+
+    if (distinctIds.length > 0) {
+      const [techRows] = await db.query(
+        `SELECT id, full_name FROM users WHERE id IN (${distinctIds.map(() => '?').join(',')})`,
+        distinctIds
+      );
+      const nameById = {};
+      techRows.forEach(t => { nameById[t.id] = t.full_name; });
+
+      technicianIdFields.forEach(([idField, nameField]) => {
+        finalReport[nameField] = finalReport[idField] ? (nameById[finalReport[idField]] || null) : null;
+      });
+    } else {
+      technicianIdFields.forEach(([, nameField]) => { finalReport[nameField] = null; });
+    }
 
     res.json({ success: true, data: finalReport });
 
