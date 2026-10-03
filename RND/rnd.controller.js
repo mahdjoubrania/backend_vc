@@ -5,48 +5,126 @@ exports.getRdvAnalytics = async (req, res) => {
   try {
     const { period = '15days', startDate, endDate } = req.query;
 
+    // نطاق التاريخ الحالي (شرط بدون كلمة WHERE، نركّبه بكل استعلام حسب حاجته)
+    let dateCondition = '1=1';
+    let prevDateCondition = '1=1';
+    let queryParams = [];
+    let prevQueryParams = [];
+
+    if (period === 'month') {
+      dateCondition = 'appointment_date >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH)';
+      prevDateCondition = 'appointment_date >= DATE_SUB(CURDATE(), INTERVAL 2 MONTH) AND appointment_date < DATE_SUB(CURDATE(), INTERVAL 1 MONTH)';
+    } else if (period === '15days') {
+      dateCondition = 'appointment_date >= DATE_SUB(CURDATE(), INTERVAL 15 DAY)';
+      prevDateCondition = 'appointment_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND appointment_date < DATE_SUB(CURDATE(), INTERVAL 15 DAY)';
+    } else if (period === 'custom' && startDate && endDate) {
+      dateCondition = 'DATE(appointment_date) BETWEEN ? AND ?';
+      queryParams = [startDate, endDate];
+
+      const diffDays = Math.max(1, Math.round((new Date(endDate) - new Date(startDate)) / 86400000) + 1);
+      const prevEnd = new Date(startDate);
+      prevEnd.setDate(prevEnd.getDate() - 1);
+      const prevStart = new Date(prevEnd);
+      prevStart.setDate(prevStart.getDate() - diffDays + 1);
+      const toISO = (d) => d.toISOString().split('T')[0];
+
+      prevDateCondition = 'DATE(appointment_date) BETWEEN ? AND ?';
+      prevQueryParams = [toISO(prevStart), toISO(prevEnd)];
+    } else if (period === 'year') {
+      dateCondition = 'YEAR(appointment_date) = YEAR(CURDATE())';
+      prevDateCondition = 'YEAR(appointment_date) = YEAR(CURDATE()) - 1';
+    }
+
+    // 1. البطاقات العلوية + الإجمالي (للنسب المئوية)
     const [statusCounts] = await db.query(`
       SELECT 
         SUM(CASE WHEN status IN ('NO_SHOW', 'ABSENT') THEN 1 ELSE 0 END) as noShow,
         SUM(CASE WHEN status IN ('CANCELLED', 'CANCELED', 'ANNULE') THEN 1 ELSE 0 END) as canceled,
-        SUM(CASE WHEN status = 'IN_PROGRESS' THEN 1 ELSE 0 END) as incomplete,
-        SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed
+        SUM(CASE WHEN status IN ('IN_PROGRESS', 'IN_WORKSHOP') THEN 1 ELSE 0 END) as incomplete,
+        SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed,
+        COUNT(*) as total
       FROM appointments
-    `);
+      WHERE ${dateCondition}
+    `, queryParams);
 
-    let whereClause = '';
-    let queryParams = [];
+    // 2. نفس البطاقات لكن للفترة السابقة (لحساب سهم المقارنة ↑/↓)
+    const [prevStatusCounts] = await db.query(`
+      SELECT 
+        SUM(CASE WHEN status IN ('NO_SHOW', 'ABSENT') THEN 1 ELSE 0 END) as noShow,
+        SUM(CASE WHEN status IN ('CANCELLED', 'CANCELED', 'ANNULE') THEN 1 ELSE 0 END) as canceled,
+        SUM(CASE WHEN status IN ('IN_PROGRESS', 'IN_WORKSHOP') THEN 1 ELSE 0 END) as incomplete
+      FROM appointments
+      WHERE ${prevDateCondition}
+    `, prevQueryParams);
 
-    if (period === 'month') {
-      whereClause = 'WHERE appointment_date >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH)';
-    } else if (period === '15days') {
-      whereClause = 'WHERE appointment_date >= DATE_SUB(CURDATE(), INTERVAL 15 DAY)';
-    } else if (period === 'custom' && startDate && endDate) {
-      whereClause = 'WHERE DATE(appointment_date) BETWEEN ? AND ?';
-      queryParams = [startDate, endDate];
-    } else if (period === 'year') {
-      whereClause = 'WHERE YEAR(appointment_date) = YEAR(CURDATE())';
-    }
-
+    // 3. تطور يومي (للرسم الخطي)
     const [dailyTrend] = await db.query(`
       SELECT 
         DATE_FORMAT(appointment_date, '%Y-%m-%d') as date,
         COALESCE(SUM(CASE WHEN status IN ('NO_SHOW', 'ABSENT') THEN 1 ELSE 0 END), 0) as no_show_count,
         COALESCE(SUM(CASE WHEN status IN ('CANCELLED', 'CANCELED', 'ANNULE') THEN 1 ELSE 0 END), 0) as canceled_count
       FROM appointments
-      ${whereClause}
+      WHERE ${dateCondition}
       GROUP BY DATE_FORMAT(appointment_date, '%Y-%m-%d')
       ORDER BY date ASC
     `, queryParams);
 
-    const result = statusCounts[0] || { noShow: 0, canceled: 0, incomplete: 0, completed: 0 };
+    // 4. أكثر أسباب الإلغاء/الغياب تكراراً (أعلى 5)
+    const [cancelReasons] = await db.query(`
+      SELECT cancel_reason AS reason, COUNT(*) AS count
+      FROM appointments
+      WHERE ${dateCondition}
+        AND status IN ('CANCELLED', 'CANCELED', 'ANNULE', 'NO_SHOW', 'ABSENT')
+        AND cancel_reason IS NOT NULL AND cancel_reason != ''
+      GROUP BY cancel_reason
+      ORDER BY count DESC
+      LIMIT 5
+    `, queryParams);
+
+    // 5. التوزيع حسب يوم الأسبوع (إلغاء/غياب)
+    const [dowRaw] = await db.query(`
+      SELECT 
+        DAYOFWEEK(appointment_date) AS dow,
+        SUM(CASE WHEN status IN ('NO_SHOW', 'ABSENT') THEN 1 ELSE 0 END) AS noShowCount,
+        SUM(CASE WHEN status IN ('CANCELLED', 'CANCELED', 'ANNULE') THEN 1 ELSE 0 END) AS canceledCount
+      FROM appointments
+      WHERE ${dateCondition}
+      GROUP BY DAYOFWEEK(appointment_date)
+    `, queryParams);
+
+    const dayNames = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam']; // DAYOFWEEK: 1=Dimanche..7=Samedi
+    const dayOfWeekDistribution = dayNames.map((name, idx) => {
+      const row = dowRaw.find(r => r.dow === idx + 1);
+      return {
+        day: name,
+        noShow: row ? Number(row.noShowCount) || 0 : 0,
+        canceled: row ? Number(row.canceledCount) || 0 : 0
+      };
+    });
+
+    const result = statusCounts[0] || { noShow: 0, canceled: 0, incomplete: 0, completed: 0, total: 0 };
+    const prevResult = prevStatusCounts[0] || { noShow: 0, canceled: 0, incomplete: 0 };
+
+    // نسبة التغيّر مقارنة بالفترة السابقة (null لو ما فيه بيانات سابقة للمقارنة)
+    const pctChange = (current, previous) => {
+      if (!previous || previous === 0) return current > 0 ? 100 : null;
+      return Math.round(((current - previous) / previous) * 100);
+    };
 
     res.json({
       noShow: result.noShow || 0,
       canceled: result.canceled || 0,
       incomplete: result.incomplete || 0,
       completed: result.completed || 0,
-      dailyTrend: dailyTrend || []
+      total: result.total || 0,
+      dailyTrend: dailyTrend || [],
+      cancelReasons: cancelReasons || [],
+      dayOfWeekDistribution,
+      trends: {
+        noShow: pctChange(result.noShow || 0, prevResult.noShow || 0),
+        canceled: pctChange(result.canceled || 0, prevResult.canceled || 0),
+        incomplete: pctChange(result.incomplete || 0, prevResult.incomplete || 0)
+      }
     });
   } catch (error) {
     console.error('RDV Analytics Error:', error);
@@ -494,9 +572,27 @@ exports.updateAppointment = async (req, res) => {
 // 9. جلب المواعيد الملغاة والغائبة
 exports.getCancelledAppointments = async (req, res) => {
   try {
+    const { period, startDate, endDate } = req.query;
+
+    // نفس منطق الفلترة المستخدم بـ getRdvAnalytics — لو ما تحدد period، نرجّع كل التاريخ (سلوك قديم محفوظ)
+    let dateClause = '';
+    let queryParams = [];
+
+    if (period === 'month') {
+      dateClause = 'AND a.appointment_date >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH)';
+    } else if (period === '15days') {
+      dateClause = 'AND a.appointment_date >= DATE_SUB(CURDATE(), INTERVAL 15 DAY)';
+    } else if (period === 'custom' && startDate && endDate) {
+      dateClause = 'AND DATE(a.appointment_date) BETWEEN ? AND ?';
+      queryParams = [startDate, endDate];
+    } else if (period === 'year') {
+      dateClause = 'AND YEAR(a.appointment_date) = YEAR(CURDATE())';
+    }
+
     const [rows] = await db.query(`
       SELECT 
         a.id,
+        a.client_id,
         c.full_name AS client_name,
         a.tlf AS phone,
         CONCAT(COALESCE(v.make,''), ' ', COALESCE(v.model,'')) AS vehicle_name,
@@ -509,8 +605,25 @@ exports.getCancelledAppointments = async (req, res) => {
       LEFT JOIN clients c ON a.client_id = c.id
       LEFT JOIN vehicules v ON a.vehicle_id = v.id
       WHERE a.status IN ('CANCELLED', 'CANCELED', 'NO_SHOW', 'ANNULE', 'ABSENT')
+      ${dateClause}
       ORDER BY a.appointment_date DESC
-    `);
+    `, queryParams);
+
+    // عملاء متكررو الإلغاء/الغياب: نحسب على كل التاريخ (مو بس الفترة المعروضة)، لأنها صفة عن العميل نفسه
+    const clientIds = [...new Set(rows.map(r => r.client_id).filter(Boolean))];
+    if (clientIds.length > 0) {
+      const [repeatCounts] = await db.query(
+        `SELECT client_id, COUNT(*) AS total_cancel_count
+         FROM appointments
+         WHERE client_id IN (${clientIds.map(() => '?').join(',')})
+           AND status IN ('CANCELLED', 'CANCELED', 'NO_SHOW', 'ANNULE', 'ABSENT')
+         GROUP BY client_id`,
+        clientIds
+      );
+      const countByClient = {};
+      repeatCounts.forEach(r => { countByClient[r.client_id] = r.total_cancel_count; });
+      rows.forEach(r => { r.client_cancel_count = countByClient[r.client_id] || 1; });
+    }
 
     res.json(rows);
   } catch (error) {
