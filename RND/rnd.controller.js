@@ -67,6 +67,38 @@ exports.getDashboardSummary = async (req, res) => {
       WHERE is_active = TRUE OR is_active IS NULL
     `);
 
+    // نبض اليوم: مواعيد اليوم / داخل الورشة الآن / اكتملت اليوم / إيراد اليوم (محصّل فعلياً)
+    const todayCondition = `DATE(appointment_date) = DATE(CONVERT_TZ(NOW(), '+00:00', '+01:00'))`;
+
+    const [[todayAppointmentsRow]] = await db.query(
+      `SELECT COUNT(*) AS count FROM appointments WHERE ${todayCondition}`
+    );
+    const [[inWorkshopRow]] = await db.query(
+      `SELECT COUNT(*) AS count FROM appointments WHERE status IN ('IN_WORKSHOP', 'IN_PROGRESS')`
+    );
+    const [[completedTodayRow]] = await db.query(
+      `SELECT COUNT(*) AS count FROM appointments
+       WHERE status = 'COMPLETED' AND DATE(completed_at) = DATE(CONVERT_TZ(NOW(), '+00:00', '+01:00'))`
+    );
+    const [[revenueTodayRow]] = await db.query(
+      `SELECT COALESCE(SUM(versement), 0) AS total FROM appointments WHERE ${todayCondition}`
+    );
+
+    // إجمالي المبلغ المتبقي (غير محصّل) عبر كل المواعيد النشطة — مواعيد ملغاة/غائبة لا تُحسب
+    const [[outstandingRow]] = await db.query(
+      `SELECT COALESCE(SUM(total_amount - versement), 0) AS total
+       FROM appointments
+       WHERE status NOT IN ('CANCELLED', 'CANCELED', 'ANNULE', 'NO_SHOW', 'ABSENT')`
+    );
+
+    const todayStats = {
+      todayAppointments: todayAppointmentsRow.count || 0,
+      inWorkshopNow: inWorkshopRow.count || 0,
+      completedToday: completedTodayRow.count || 0,
+      revenueToday: revenueTodayRow.total || 0,
+      outstandingTotal: outstandingRow.total || 0
+    };
+
     const [revenueData] = await db.query(`
       SELECT 
         DATE_FORMAT(appointment_date, '%Y-%m-%d') as date,
@@ -101,6 +133,7 @@ exports.getDashboardSummary = async (req, res) => {
 
     res.json({
       users: userCounts[0] || { totalUsers: 0, receptionCount: 0, techCount: 0, adminCount: 0 },
+      todayStats,
       revenue: revenueData || [],
       inspectionTypes: inspectionTypes || []
     });
