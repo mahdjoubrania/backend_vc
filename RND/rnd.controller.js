@@ -79,13 +79,25 @@ exports.getDashboardSummary = async (req, res) => {
       ORDER BY date ASC
     `);
 
-    const [inspectionTypes] = await db.query(`
+    const [rawTypes] = await db.query(`
       SELECT 
         COALESCE(service_type, 'Non Spécifié') as label,
         COUNT(*) as count
       FROM appointments
       GROUP BY service_type
     `);
+
+    // service_type حقل نص حر قد يحتوي عدة أنواع مفصولة بفاصلة (مثال: "SCANNER, Inspection")
+    // نفكك كل قيمة مركّبة ونجمع العدد تحت كل نوع فردي بدل عرضه كفئة منفصلة مكسورة
+    const typeCounts = {};
+    rawTypes.forEach(row => {
+      const parts = String(row.label).split(',').map(s => s.trim()).filter(Boolean);
+      const uniqueParts = parts.length > 0 ? parts : ['Non Spécifié'];
+      uniqueParts.forEach(part => {
+        typeCounts[part] = (typeCounts[part] || 0) + row.count;
+      });
+    });
+    const inspectionTypes = Object.entries(typeCounts).map(([label, count]) => ({ label, count }));
 
     res.json({
       users: userCounts[0] || { totalUsers: 0, receptionCount: 0, techCount: 0, adminCount: 0 },
