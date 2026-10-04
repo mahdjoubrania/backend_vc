@@ -5,6 +5,9 @@ exports.getRdvAnalytics = async (req, res) => {
   try {
     const { period = '15days', startDate, endDate } = req.query;
 
+    // كل حالات الإلغاء/الغياب تُعامل كحالة "Annulé" واحدة (الغياب يُسجَّل كسبب نصي داخل الإلغاء)
+    const CANCEL_STATUSES = `'CANCELLED', 'CANCELED', 'ANNULE', 'NO_SHOW', 'ABSENT'`;
+
     // نطاق التاريخ الحالي (شرط بدون كلمة WHERE، نركّبه بكل استعلام حسب حاجته)
     let dateCondition = '1=1';
     let prevDateCondition = '1=1';
@@ -38,8 +41,7 @@ exports.getRdvAnalytics = async (req, res) => {
     // 1. البطاقات العلوية + الإجمالي (للنسب المئوية)
     const [statusCounts] = await db.query(`
       SELECT 
-        SUM(CASE WHEN status IN ('NO_SHOW', 'ABSENT') THEN 1 ELSE 0 END) as noShow,
-        SUM(CASE WHEN status IN ('CANCELLED', 'CANCELED', 'ANNULE') THEN 1 ELSE 0 END) as canceled,
+        SUM(CASE WHEN status IN (${CANCEL_STATUSES}) THEN 1 ELSE 0 END) as canceled,
         SUM(CASE WHEN status IN ('IN_PROGRESS', 'IN_WORKSHOP') THEN 1 ELSE 0 END) as incomplete,
         SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed,
         COUNT(*) as total
@@ -50,8 +52,7 @@ exports.getRdvAnalytics = async (req, res) => {
     // 2. نفس البطاقات لكن للفترة السابقة (لحساب سهم المقارنة ↑/↓)
     const [prevStatusCounts] = await db.query(`
       SELECT 
-        SUM(CASE WHEN status IN ('NO_SHOW', 'ABSENT') THEN 1 ELSE 0 END) as noShow,
-        SUM(CASE WHEN status IN ('CANCELLED', 'CANCELED', 'ANNULE') THEN 1 ELSE 0 END) as canceled,
+        SUM(CASE WHEN status IN (${CANCEL_STATUSES}) THEN 1 ELSE 0 END) as canceled,
         SUM(CASE WHEN status IN ('IN_PROGRESS', 'IN_WORKSHOP') THEN 1 ELSE 0 END) as incomplete
       FROM appointments
       WHERE ${prevDateCondition}
@@ -61,32 +62,30 @@ exports.getRdvAnalytics = async (req, res) => {
     const [dailyTrend] = await db.query(`
       SELECT 
         DATE_FORMAT(appointment_date, '%Y-%m-%d') as date,
-        COALESCE(SUM(CASE WHEN status IN ('NO_SHOW', 'ABSENT') THEN 1 ELSE 0 END), 0) as no_show_count,
-        COALESCE(SUM(CASE WHEN status IN ('CANCELLED', 'CANCELED', 'ANNULE') THEN 1 ELSE 0 END), 0) as canceled_count
+        COALESCE(SUM(CASE WHEN status IN (${CANCEL_STATUSES}) THEN 1 ELSE 0 END), 0) as canceled_count
       FROM appointments
       WHERE ${dateCondition}
       GROUP BY DATE_FORMAT(appointment_date, '%Y-%m-%d')
       ORDER BY date ASC
     `, queryParams);
 
-    // 4. أكثر أسباب الإلغاء/الغياب تكراراً (أعلى 5)
+    // 4. أكثر أسباب الإلغاء تكراراً (أعلى 5)
     const [cancelReasons] = await db.query(`
       SELECT cancel_reason AS reason, COUNT(*) AS count
       FROM appointments
       WHERE ${dateCondition}
-        AND status IN ('CANCELLED', 'CANCELED', 'ANNULE', 'NO_SHOW', 'ABSENT')
+        AND status IN (${CANCEL_STATUSES})
         AND cancel_reason IS NOT NULL AND cancel_reason != ''
       GROUP BY cancel_reason
       ORDER BY count DESC
       LIMIT 5
     `, queryParams);
 
-    // 5. التوزيع حسب يوم الأسبوع (إلغاء/غياب)
+    // 5. التوزيع حسب يوم الأسبوع
     const [dowRaw] = await db.query(`
       SELECT 
         DAYOFWEEK(appointment_date) AS dow,
-        SUM(CASE WHEN status IN ('NO_SHOW', 'ABSENT') THEN 1 ELSE 0 END) AS noShowCount,
-        SUM(CASE WHEN status IN ('CANCELLED', 'CANCELED', 'ANNULE') THEN 1 ELSE 0 END) AS canceledCount
+        SUM(CASE WHEN status IN (${CANCEL_STATUSES}) THEN 1 ELSE 0 END) AS canceledCount
       FROM appointments
       WHERE ${dateCondition}
       GROUP BY DAYOFWEEK(appointment_date)
@@ -97,13 +96,12 @@ exports.getRdvAnalytics = async (req, res) => {
       const row = dowRaw.find(r => r.dow === idx + 1);
       return {
         day: name,
-        noShow: row ? Number(row.noShowCount) || 0 : 0,
         canceled: row ? Number(row.canceledCount) || 0 : 0
       };
     });
 
-    const result = statusCounts[0] || { noShow: 0, canceled: 0, incomplete: 0, completed: 0, total: 0 };
-    const prevResult = prevStatusCounts[0] || { noShow: 0, canceled: 0, incomplete: 0 };
+    const result = statusCounts[0] || { canceled: 0, incomplete: 0, completed: 0, total: 0 };
+    const prevResult = prevStatusCounts[0] || { canceled: 0, incomplete: 0 };
 
     // نسبة التغيّر مقارنة بالفترة السابقة (null لو ما فيه بيانات سابقة للمقارنة)
     const pctChange = (current, previous) => {
@@ -112,7 +110,6 @@ exports.getRdvAnalytics = async (req, res) => {
     };
 
     res.json({
-      noShow: result.noShow || 0,
       canceled: result.canceled || 0,
       incomplete: result.incomplete || 0,
       completed: result.completed || 0,
@@ -121,7 +118,6 @@ exports.getRdvAnalytics = async (req, res) => {
       cancelReasons: cancelReasons || [],
       dayOfWeekDistribution,
       trends: {
-        noShow: pctChange(result.noShow || 0, prevResult.noShow || 0),
         canceled: pctChange(result.canceled || 0, prevResult.canceled || 0),
         incomplete: pctChange(result.incomplete || 0, prevResult.incomplete || 0)
       }

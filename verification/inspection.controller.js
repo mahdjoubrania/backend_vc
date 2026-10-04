@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { SPECS, validateSections, diffSection, truncateChangesForLog } = require('./report-edit.helpers');
 
 exports.saveKilometrage = async (req, res) => {
   let {
@@ -510,9 +511,12 @@ exports.getToleReportById = async (req, res) => {
       LEFT JOIN inspection_suspension susp ON i.id = susp.inspection_id
       LEFT JOIN inspection_tole t ON i.id = t.inspection_id
       WHERE i.id = ? OR i.appointment_id = ?
+      ORDER BY (i.id = ?) DESC
+      LIMIT 1
     `;
 
-    const [rows] = await db.query(query, [id, id]);
+    // مطابقة رقم الفحص تُفضَّل دائماً على مطابقة رقم الموعد (يمنع عرض فحص آخر عند تصادف الأرقام)
+    const [rows] = await db.query(query, [id, id, id]);
 
     if (!rows || rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
@@ -674,6 +678,216 @@ exports.completeInspection = async (req, res) => {
     res.json({ success: true, message: 'تم إنهاء الفحص بنجاح' });
   } catch (err) {
     console.error('❌ completeInspection:', err);
+    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
+  }
+};
+
+
+/* =====================================================================
+   تعديل التقرير من طرف الأدمن فقط (محمية بـ requireRole('ADMIN') بالمسارات)
+   - لا تلمس technician_id (نسبة العمل للتقني الأصلي تبقى كما هي)
+   - كل تعديل يُسجَّل بجدول inspection_edit_log (من/متى/قبل/بعد)
+   - تمسح ملخص الذكاء الاصطناعي المخزَّن ليُعاد توليده من البيانات الجديدة
+   - معرّف الفحص صريح فقط (inspections.id) — بدون الالتباس مع رقم الموعد
+   ===================================================================== */
+
+class HttpError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+
+function parseInspectionId(raw) {
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+// قراءة بيانات التقرير لشاشة التعديل (الحقول القابلة للتعديل فقط، بدون الصور)
+exports.adminGetReportForEdit = async (req, res) => {
+  const id = parseInspectionId(req.params.id);
+  if (!id) return res.status(400).json({ success: false, error: 'Identifiant de rapport invalide.' });
+
+  try {
+    const [headRows] = await db.query(
+      `SELECT i.id, i.status, i.created_at,
+              c.full_name AS client_name, c.phone AS client_phone,
+              v.make AS brand, v.model, v.license_plate AS plate, v.vin_number
+       FROM inspections i
+       LEFT JOIN appointments a ON i.appointment_id = a.id
+       LEFT JOIN clients c ON a.client_id = c.id
+       LEFT JOIN vehicules v ON a.vehicle_id = v.id
+       WHERE i.id = ?`,
+      [id]
+    );
+    if (headRows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Rapport introuvable.' });
+    }
+
+    const sections = {};
+    const technicianIds = new Set();
+
+    for (const [key, spec] of Object.entries(SPECS)) {
+      const cols = Object.keys(spec.fields).map((c) => `\`${c}\``).join(', ');
+      const [rows] = await db.query(
+        `SELECT ${cols}, technician_id FROM \`${spec.table}\` WHERE inspection_id = ? LIMIT 1`,
+        [id]
+      );
+      if (rows.length > 0) {
+        const { technician_id, ...values } = rows[0];
+        sections[key] = { exists: true, technicianId: technician_id || null, technicianName: null, values };
+        if (technician_id) technicianIds.add(technician_id);
+      } else {
+        sections[key] = { exists: false, technicianId: null, technicianName: null, values: null };
+      }
+    }
+
+    if (technicianIds.size > 0) {
+      const ids = [...technicianIds];
+      const [users] = await db.query(
+        `SELECT id, full_name FROM users WHERE id IN (${ids.map(() => '?').join(',')})`,
+        ids
+      );
+      const nameById = {};
+      users.forEach((u) => { nameById[u.id] = u.full_name; });
+      Object.values(sections).forEach((sec) => {
+        if (sec.technicianId) sec.technicianName = nameById[sec.technicianId] || null;
+      });
+    }
+
+    res.json({ success: true, data: { header: headRows[0], sections } });
+  } catch (err) {
+    console.error('❌ adminGetReportForEdit:', err);
+    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
+  }
+};
+
+// حفظ التعديلات: { sections: { moteur: { notes: '...' }, kilometrage: { kilometrage_affiche: 49000 } } }
+exports.adminUpdateReport = async (req, res) => {
+  const id = parseInspectionId(req.params.id);
+  if (!id) return res.status(400).json({ success: false, error: 'Identifiant de rapport invalide.' });
+
+  const { errors, clean } = validateSections(req.body && req.body.sections);
+  if (errors.length > 0) {
+    return res.status(400).json({ success: false, error: 'Données invalides.', details: errors });
+  }
+  if (Object.keys(clean).length === 0) {
+    return res.json({ success: true, changed: false, message: 'Aucune modification à enregistrer.' });
+  }
+
+  let conn;
+  try {
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+
+    // قفل صف الفحص: يمنع تعديلين متزامنين لنفس التقرير
+    const [insp] = await conn.query('SELECT id FROM inspections WHERE id = ? FOR UPDATE', [id]);
+    if (insp.length === 0) throw new HttpError(404, 'Rapport introuvable.');
+
+    const changes = {};
+    const created = [];
+
+    for (const [sectionKey, newValues] of Object.entries(clean)) {
+      const spec = SPECS[sectionKey];
+      const cols = Object.keys(newValues);
+      const quoted = cols.map((c) => `\`${c}\``);
+
+      const [existing] = await conn.query(
+        `SELECT ${quoted.join(', ')} FROM \`${spec.table}\` WHERE inspection_id = ? LIMIT 1`,
+        [id]
+      );
+
+      if (existing.length > 0) {
+        const diff = diffSection(existing[0], newValues, spec.fields);
+        const changedCols = Object.keys(diff);
+        if (changedCols.length === 0) continue;
+
+        await conn.query(
+          `UPDATE \`${spec.table}\` SET ${changedCols.map((c) => `\`${c}\` = ?`).join(', ')} WHERE inspection_id = ?`,
+          [...changedCols.map((c) => newValues[c]), id]
+        );
+        changes[sectionKey] = diff;
+      } else {
+        // قسم لم يُنجَز من قبل: ننشئه بدون نسبته لأي تقني (technician_id يبقى NULL)
+        for (const required of spec.requiredOnCreate || []) {
+          if (newValues[required] === undefined || newValues[required] === null) {
+            throw new HttpError(400, `Cette section n'existe pas encore : le champ « ${required} » est obligatoire pour la créer.`);
+          }
+        }
+        await conn.query(
+          `INSERT INTO \`${spec.table}\` (inspection_id, ${quoted.join(', ')}) VALUES (?, ${cols.map(() => '?').join(', ')})`,
+          [id, ...cols.map((c) => newValues[c])]
+        );
+        created.push(sectionKey);
+        const diff = {};
+        cols.forEach((c) => { diff[c] = [null, newValues[c]]; });
+        changes[sectionKey] = diff;
+      }
+    }
+
+    if (Object.keys(changes).length === 0) {
+      await conn.rollback();
+      return res.json({ success: true, changed: false, message: 'Aucune modification détectée.' });
+    }
+
+    // الملخص المخزَّن لم يعد صالحاً: يُعاد توليده عند فتح التقرير
+    await conn.query('DELETE FROM inspection_ai_summaries WHERE inspection_id = ?', [id]);
+
+    const logPayload = truncateChangesForLog(changes);
+    if (created.length > 0) logPayload._created = created;
+    await conn.query(
+      'INSERT INTO inspection_edit_log (inspection_id, admin_id, sections, changes) VALUES (?, ?, ?, ?)',
+      [id, req.user.id, Object.keys(changes).join(','), JSON.stringify(logPayload)]
+    );
+
+    await conn.commit();
+    res.json({
+      success: true,
+      changed: true,
+      sections: Object.keys(changes),
+      message: 'Rapport mis à jour avec succès.'
+    });
+  } catch (err) {
+    if (conn) { try { await conn.rollback(); } catch (_) { /* ignore */ } }
+
+    if (err instanceof HttpError) {
+      return res.status(err.status).json({ success: false, error: err.message });
+    }
+    console.error('❌ adminUpdateReport:', err);
+    if (err && err.code === 'ER_NO_SUCH_TABLE') {
+      return res.status(500).json({
+        success: false,
+        error: "Configuration incomplète : la table de l'historique des modifications est absente. Exécutez le script SQL fourni."
+      });
+    }
+    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
+  } finally {
+    if (conn) conn.release();
+  }
+};
+
+// سجل التعديلات (آخر 50)
+exports.adminGetReportHistory = async (req, res) => {
+  const id = parseInspectionId(req.params.id);
+  if (!id) return res.status(400).json({ success: false, error: 'Identifiant de rapport invalide.' });
+
+  try {
+    const [rows] = await db.query(
+      `SELECT l.id, l.sections, l.changes, l.edited_at, u.full_name AS admin_name
+       FROM inspection_edit_log l
+       LEFT JOIN users u ON u.id = l.admin_id
+       WHERE l.inspection_id = ?
+       ORDER BY l.id DESC
+       LIMIT 50`,
+      [id]
+    );
+    const data = rows.map((r) => {
+      let changes = r.changes;
+      if (typeof changes === 'string') { try { changes = JSON.parse(changes); } catch (_) { changes = null; } }
+      return { id: r.id, editedAt: r.edited_at, adminName: r.admin_name, sections: r.sections, changes };
+    });
+    res.json({ success: true, data });
+  } catch (err) {
+    // قبل تشغيل سكربت SQL: الصفحة تعمل والسجل فارغ
+    if (err && err.code === 'ER_NO_SUCH_TABLE') return res.json({ success: true, data: [], notice: 'history_table_missing' });
+    console.error('❌ adminGetReportHistory:', err);
     res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
   }
 };
