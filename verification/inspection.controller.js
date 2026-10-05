@@ -635,6 +635,18 @@ exports.getToleReportById = async (req, res) => {
   const { id } = req.params;
 
   try {
+    // الخطوة 1: تحديد الفحص باستعلام صغير بلا فرز. نفضّل مطابقة رقم الفحص، ونرجع لرقم الموعد فقط إن لم يوجد فحص بهذا الرقم.
+    // (لا نستخدم ORDER BY هنا إطلاقاً: الاستعلام الرئيسي أدناه يجلب صور الرسم الضخمة (elements_ext_json)،
+    //  وأي فرز عليه يستنفد ذاكرة الفرز بالسيرفر: ER_OUT_OF_SORTMEMORY)
+    let [idRows] = await db.query('SELECT id FROM inspections WHERE id = ? LIMIT 1', [id]);
+    if (!idRows || idRows.length === 0) {
+      [idRows] = await db.query('SELECT id FROM inspections WHERE appointment_id = ? LIMIT 1', [id]);
+    }
+    if (!idRows || idRows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
+    }
+    const inspectionId = idRows[0].id;
+
     const query = `
       SELECT 
         i.id, 
@@ -686,13 +698,11 @@ exports.getToleReportById = async (req, res) => {
       LEFT JOIN inspection_general_observations gen ON i.id = gen.inspection_id
       LEFT JOIN inspection_suspension susp ON i.id = susp.inspection_id
       LEFT JOIN inspection_tole t ON i.id = t.inspection_id
-      WHERE i.id = ? OR i.appointment_id = ?
-      ORDER BY (i.id = ?) DESC
+      WHERE i.id = ?
       LIMIT 1
     `;
 
-    // مطابقة رقم الفحص تُفضَّل دائماً على مطابقة رقم الموعد (يمنع عرض فحص آخر عند تصادف الأرقام)
-    const [rows] = await db.query(query, [id, id, id]);
+    const [rows] = await db.query(query, [inspectionId]);
 
     if (!rows || rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
