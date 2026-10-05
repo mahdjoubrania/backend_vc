@@ -648,18 +648,15 @@ exports.getToleReportById = async (req, res) => {
         km.kilometrage_affiche,
         km.conformite AS km_conformite,
         km.notes AS km_notes,
-        km.technician_id AS kilometrage_technician_id,
         mot.niveau_huile, 
         mot.fuite_huile, 
         mot.fuite_liquide_refroidissement, 
         mot.bruit_moteur, 
         mot.fumee_echappement, 
         mot.notes AS moteur_notes,
-        mot.technician_id AS moteur_technician_id,
         gen.nombre_cles,
         gen.rapport_mecanique,
         gen.equipements_secour,
-        gen.technician_id AS general_technician_id,
         susp.usure_pneu_avg, susp.obs_pneu_avg,
         susp.usure_pneu_avd, susp.obs_pneu_avd,
         susp.usure_pneu_arg, susp.obs_pneu_arg,
@@ -670,7 +667,6 @@ exports.getToleReportById = async (req, res) => {
         susp.jante_ard, susp.jante_ard_obs,
         susp.corrosion_soubassement, susp.traces_choc,
         susp.notes AS suspension_notes,
-        susp.technician_id AS suspension_technician_id,
         t.elements_ext_json,
         t.longerons_status, t.longerons_obs,
         t.traverses_status, t.traverses_obs,
@@ -680,8 +676,7 @@ exports.getToleReportById = async (req, res) => {
         t.optique_status, t.optique_obs,
         t.vitre_status, t.vitre_obs,
         t.conclusion_structure,
-        t.notes AS tole_notes,
-        t.technician_id AS tole_technician_id
+        t.notes AS tole_notes
       FROM inspections i
       LEFT JOIN appointments a ON i.appointment_id = a.id
       LEFT JOIN clients c ON a.client_id = c.id
@@ -705,10 +700,10 @@ exports.getToleReportById = async (req, res) => {
 
     const reportData = rows[0];
 
-    let scannerData = { dtc_codes: null, calculateur_status: 'OK', voyants_allumes: null, scanner_notes: null, scanner_technician_id: null };
+    let scannerData = { dtc_codes: null, calculateur_status: 'OK', voyants_allumes: null, scanner_notes: null };
     try {
       const [scRows] = await db.query(
-        'SELECT dtc_codes, calculateur_status, voyants_allumes, notes AS scanner_notes, technician_id AS scanner_technician_id FROM inspection_scanner WHERE inspection_id = ?',
+        'SELECT dtc_codes, calculateur_status, voyants_allumes, notes AS scanner_notes FROM inspection_scanner WHERE inspection_id = ?',
         [reportData.id]
       );
       if (scRows.length > 0) {
@@ -724,32 +719,49 @@ exports.getToleReportById = async (req, res) => {
       niveau_huile: reportData.niveau_huile || 'Non contrôlé'
     };
 
-    // جلب أسماء التقنيين الذين نفّذوا كل وحدة (دفعة واحدة، بدون أي JOIN إضافي بالاستعلام الرئيسي)
-    const technicianIdFields = [
-      ['scanner_technician_id', 'scanner_technician_name'],
-      ['moteur_technician_id', 'moteur_technician_name'],
-      ['suspension_technician_id', 'suspension_technician_name'],
-      ['tole_technician_id', 'tole_technician_name'],
-      ['kilometrage_technician_id', 'kilometrage_technician_name'],
-      ['general_technician_id', 'general_technician_name']
+    // أسماء منفّذي الوحدات: معلومة إضافية فقط. أي فشل بها (مثلاً عمود technician_id غير منشأ بعد)
+    // لا يجوز أن يمنع عرض التقرير، لذلك تُجلب باستعلامات منفصلة داخل try/catch
+    const technicianSources = [
+      ['scanner', 'inspection_scanner'],
+      ['moteur', 'inspection_moteur'],
+      ['suspension', 'inspection_suspension'],
+      ['tole', 'inspection_tole'],
+      ['kilometrage', 'inspection_kilometrage'],
+      ['general', 'inspection_general_observations']
     ];
-    const distinctIds = [...new Set(
-      technicianIdFields.map(([idField]) => finalReport[idField]).filter(Boolean)
-    )];
+    const resetTechnicians = () => technicianSources.forEach(([key]) => {
+      finalReport[`${key}_technician_id`] = null;
+      finalReport[`${key}_technician_name`] = null;
+    });
+    resetTechnicians();
 
-    if (distinctIds.length > 0) {
-      const [techRows] = await db.query(
-        `SELECT id, full_name FROM users WHERE id IN (${distinctIds.map(() => '?').join(',')})`,
-        distinctIds
-      );
-      const nameById = {};
-      techRows.forEach(t => { nameById[t.id] = t.full_name; });
-
-      technicianIdFields.forEach(([idField, nameField]) => {
-        finalReport[nameField] = finalReport[idField] ? (nameById[finalReport[idField]] || null) : null;
-      });
-    } else {
-      technicianIdFields.forEach(([, nameField]) => { finalReport[nameField] = null; });
+    try {
+      const ids = new Set();
+      for (const [key, table] of technicianSources) {
+        const [techRows] = await db.query(
+          `SELECT technician_id FROM \`${table}\` WHERE inspection_id = ? LIMIT 1`,
+          [reportData.id]
+        );
+        const tid = techRows.length ? techRows[0].technician_id : null;
+        finalReport[`${key}_technician_id`] = tid || null;
+        if (tid) ids.add(tid);
+      }
+      if (ids.size > 0) {
+        const idList = [...ids];
+        const [users] = await db.query(
+          `SELECT id, full_name FROM users WHERE id IN (${idList.map(() => '?').join(',')})`,
+          idList
+        );
+        const nameById = {};
+        users.forEach((u) => { nameById[u.id] = u.full_name; });
+        technicianSources.forEach(([key]) => {
+          const tid = finalReport[`${key}_technician_id`];
+          finalReport[`${key}_technician_name`] = tid ? (nameById[tid] || null) : null;
+        });
+      }
+    } catch (techErr) {
+      console.warn('⚠️ Noms des techniciens ignorés (le rapport reste affiché):', techErr.message);
+      resetTechnicians();
     }
 
     res.json({ success: true, data: finalReport });
@@ -908,29 +920,43 @@ exports.adminGetReportForEdit = async (req, res) => {
     for (const [key, spec] of Object.entries(SPECS)) {
       const cols = Object.keys(spec.fields).map((c) => `\`${c}\``).join(', ');
       const [rows] = await db.query(
-        `SELECT ${cols}, technician_id FROM \`${spec.table}\` WHERE inspection_id = ? LIMIT 1`,
+        `SELECT ${cols} FROM \`${spec.table}\` WHERE inspection_id = ? LIMIT 1`,
         [id]
       );
       if (rows.length > 0) {
-        const { technician_id, ...values } = rows[0];
-        sections[key] = { exists: true, technicianId: technician_id || null, technicianName: null, values };
-        if (technician_id) technicianIds.add(technician_id);
+        sections[key] = { exists: true, technicianId: null, technicianName: null, values: rows[0] };
       } else {
         sections[key] = { exists: false, technicianId: null, technicianName: null, values: null };
       }
     }
 
-    if (technicianIds.size > 0) {
-      const ids = [...technicianIds];
-      const [users] = await db.query(
-        `SELECT id, full_name FROM users WHERE id IN (${ids.map(() => '?').join(',')})`,
-        ids
-      );
-      const nameById = {};
-      users.forEach((u) => { nameById[u.id] = u.full_name; });
-      Object.values(sections).forEach((sec) => {
-        if (sec.technicianId) sec.technicianName = nameById[sec.technicianId] || null;
-      });
+    // نسبة كل قسم لتقنيّه: معلومة اختيارية، فشلها لا يمنع فتح شاشة التعديل
+    try {
+      for (const [key, spec] of Object.entries(SPECS)) {
+        if (!sections[key].exists) continue;
+        const [t] = await db.query(
+          `SELECT technician_id FROM \`${spec.table}\` WHERE inspection_id = ? LIMIT 1`,
+          [id]
+        );
+        const tid = t.length ? t[0].technician_id : null;
+        sections[key].technicianId = tid || null;
+        if (tid) technicianIds.add(tid);
+      }
+      if (technicianIds.size > 0) {
+        const ids = [...technicianIds];
+        const [users] = await db.query(
+          `SELECT id, full_name FROM users WHERE id IN (${ids.map(() => '?').join(',')})`,
+          ids
+        );
+        const nameById = {};
+        users.forEach((u) => { nameById[u.id] = u.full_name; });
+        Object.values(sections).forEach((sec) => {
+          if (sec.technicianId) sec.technicianName = nameById[sec.technicianId] || null;
+        });
+      }
+    } catch (techErr) {
+      console.warn('⚠️ Noms des techniciens ignorés (édition):', techErr.message);
+      Object.values(sections).forEach((sec) => { sec.technicianId = null; sec.technicianName = null; });
     }
 
     res.json({ success: true, data: { header: headRows[0], sections } });
