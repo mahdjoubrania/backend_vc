@@ -311,7 +311,8 @@ exports.getTodayAppointments = async (req, res) => {
         a.completed_at,
         COALESCE(a.payment_status, 'PENDING_VERSEMENT') AS payment_status,
         COALESCE(a.total_amount, 0) AS total_amount,
-        COALESCE(a.versement, 0) AS versement
+        COALESCE(a.versement, 0) AS versement,
+        a.notes
       FROM appointments a
       LEFT JOIN clients c ON a.client_id = c.id
       LEFT JOIN vehicules v ON a.vehicle_id = v.id
@@ -345,7 +346,8 @@ exports.getAppointments = async (req, res) => {
         a.completed_at,
         COALESCE(a.payment_status, 'PENDING_VERSEMENT') AS payment_status,
         COALESCE(a.total_amount, 0) AS total_amount,
-        COALESCE(a.versement, 0) AS versement
+        COALESCE(a.versement, 0) AS versement,
+        a.notes
       FROM appointments a
       LEFT JOIN clients c ON a.client_id = c.id
       LEFT JOIN vehicules v ON a.vehicle_id = v.id
@@ -360,6 +362,34 @@ exports.getAppointments = async (req, res) => {
 };
 
 // 5. إنشاء موعد جديد
+// يعيد رقم المركبة (موجودة أو منشأة حديثاً) أو null إن تعذّر.
+// كان الإنشاء يتم فقط عند وجود VIN، فتضيع الماركة والترقيم لو تُرك VIN فارغاً (وهو اختياري بالنموذج).
+// فشل إنشاء المركبة لا يوقف حفظ الموعد نفسه.
+async function findOrCreateVehicle(clientId, { vin, licensePlate, make, model }) {
+  const cleanVin = vin ? String(vin).trim() : '';
+  const cleanPlate = licensePlate ? String(licensePlate).trim() : '';
+  if (!cleanVin && !cleanPlate) return null;
+
+  try {
+    if (cleanVin) {
+      const [byVin] = await db.query('SELECT id FROM vehicules WHERE vin_number = ? LIMIT 1', [cleanVin]);
+      if (byVin.length > 0) return byVin[0].id;
+    }
+    if (cleanPlate) {
+      const [byPlate] = await db.query('SELECT id FROM vehicules WHERE license_plate = ? LIMIT 1', [cleanPlate]);
+      if (byPlate.length > 0) return byPlate[0].id;
+    }
+    const [created] = await db.query(
+      'INSERT INTO vehicules (client_id, make, model, license_plate, vin_number) VALUES (?, ?, ?, ?, ?)',
+      [clientId, make || 'Inconnu', model || 'Inconnu', cleanPlate || null, cleanVin || null]
+    );
+    return created.insertId;
+  } catch (err) {
+    console.warn('⚠️ Création/recherche du véhicule impossible, rendez-vous enregistré sans véhicule:', err.message);
+    return null;
+  }
+}
+
 exports.createAppointment = async (req, res) => {
   try {
     const { 
@@ -374,7 +404,8 @@ exports.createAppointment = async (req, res) => {
       versement, 
       paymentStatus, 
       status,
-      typedeverification 
+      typedeverification,
+      notes
     } = req.body;
 
     if (!phone) {
@@ -394,37 +425,41 @@ exports.createAppointment = async (req, res) => {
       clientId = newClient.insertId;
     }
 
-    let vehicleId = null;
-    if (vin) {
-      const [existingVehicle] = await db.query('SELECT id FROM vehicules WHERE vin_number = ?', [vin]);
-      if (existingVehicle.length > 0) {
-        vehicleId = existingVehicle[0].id;
-      } else {
-        const [newVehicle] = await db.query(
-          'INSERT INTO vehicules (client_id, make, model, license_plate, vin_number) VALUES (?, ?, ?, ?, ?)',
-          [clientId, make || 'Inconnu', model || 'Inconnu', licensePlate || null, vin]
-        );
-        vehicleId = newVehicle.insertId;
-      }
-    }
+    const vehicleId = await findOrCreateVehicle(clientId, { vin, licensePlate, make, model });
 
-    const [result] = await db.query(
-      `INSERT INTO appointments 
-       (client_id, tlf, vehicle_id, VIN, appointment_date, total_amount, versement, payment_status, status, service_type) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        clientId, 
-        phone, 
-        vehicleId, 
-        vin || null, 
-        appointmentDate, 
-        totalAmount || 0, 
-        versement || 0, 
-        paymentStatus || 'PENDING_VERSEMENT', 
-        status || 'PENDING',
-        typedeverification || ''
-      ]
-    );
+    const baseParams = [
+      clientId,
+      phone,
+      vehicleId,
+      vin || null,
+      appointmentDate,
+      totalAmount || 0,
+      versement || 0,
+      paymentStatus || 'PENDING_VERSEMENT',
+      status || 'PENDING',
+      typedeverification || 'Inspection'
+    ];
+    const cleanNotes = (notes ? String(notes).trim() : '') || null;
+
+    // كانت الملاحظات المكتوبة بنموذج الإنشاء تضيع بصمت (لا تُدرج بالـ INSERT)
+    let result;
+    try {
+      [result] = await db.query(
+        `INSERT INTO appointments 
+         (client_id, tlf, vehicle_id, VIN, appointment_date, total_amount, versement, payment_status, status, service_type, notes) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [...baseParams, cleanNotes]
+      );
+    } catch (insertErr) {
+      if (insertErr.code !== 'ER_BAD_FIELD_ERROR') throw insertErr;
+      console.warn('⚠️ Colonne appointments.notes absente — création sans remarques.');
+      [result] = await db.query(
+        `INSERT INTO appointments 
+         (client_id, tlf, vehicle_id, VIN, appointment_date, total_amount, versement, payment_status, status, service_type) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        baseParams
+      );
+    }
 
     res.status(201).json({ 
       message: 'Rendez-vous créé avec succès', 
@@ -444,6 +479,11 @@ exports.updateAppointmentStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { status, cancel_reason } = req.body;
+
+    const VALID_STATUSES = ['PENDING', 'READY_FOR_WORKSHOP', 'IN_WORKSHOP', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'ABSENT'];
+    if (!VALID_STATUSES.includes(status)) {
+      return res.status(400).json({ message: 'Statut invalide.' });
+    }
 
     let query = `UPDATE appointments SET status = ?`;
     let queryParams = [status];
@@ -475,7 +515,20 @@ exports.updatePaymentStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { payment_status } = req.body;
-    await db.query(`UPDATE appointments SET payment_status = ? WHERE id = ?`, [payment_status, id]);
+
+    if (!['PENDING_VERSEMENT', 'ADVANCE_PAID', 'FULLY_PAID'].includes(payment_status)) {
+      return res.status(400).json({ message: 'Statut de paiement invalide.' });
+    }
+
+    if (payment_status === 'FULLY_PAID') {
+      // "Payé" يجب أن ينعكس على المبلغ المدفوع، وإلا يبقى الأدمن يرى مبلغاً متبقياً (الإيراد/المتبقي محسوبان من versement)
+      await db.query(
+        `UPDATE appointments SET payment_status = ?, versement = total_amount WHERE id = ?`,
+        [payment_status, id]
+      );
+    } else {
+      await db.query(`UPDATE appointments SET payment_status = ? WHERE id = ?`, [payment_status, id]);
+    }
     res.json({ message: 'Statut de paiement mis à jour' });
   } catch (error) {
     res.status(500).json({ message: 'Erreur lors de la mise à jour du paiement' });
@@ -528,7 +581,7 @@ exports.updateAppointment = async (req, res) => {
         total_amount = ?, 
         versement = ?, 
         payment_status = COALESCE(?, payment_status), 
-        notes = ? 
+        notes = COALESCE(?, notes) 
        WHERE id = ?`,
       [
         phone || null, 
@@ -538,7 +591,7 @@ exports.updateAppointment = async (req, res) => {
         totalAmount || 0, 
         versement || 0, 
         paymentStatus || 'PENDING_VERSEMENT', 
-        notes || '', 
+        (notes === undefined || notes === null) ? null : String(notes), 
         id
       ]
     );
@@ -552,7 +605,14 @@ exports.updateAppointment = async (req, res) => {
     }
 
     // 4. تحديث جدول السيارات
-    if (vehicle_id) {
+    // موعد أُنشئ بلا مركبة: ننشئها الآن (كان تعديل بيانات السيارة يُتجاهل بصمت مع رسالة نجاح)
+    let effectiveVehicleId = vehicle_id;
+    if (!effectiveVehicleId) {
+      effectiveVehicleId = await findOrCreateVehicle(client_id, { vin, licensePlate, make, model });
+      if (effectiveVehicleId) {
+        await db.query('UPDATE appointments SET vehicle_id = ? WHERE id = ?', [effectiveVehicleId, id]);
+      }
+    } else {
       await db.query(
         `UPDATE vehicules SET make = ?, model = ?, license_plate = ?, vin_number = ? WHERE id = ?`,
         [make || 'Inconnu', model || 'Inconnu', licensePlate || '', vin || null, vehicle_id]
