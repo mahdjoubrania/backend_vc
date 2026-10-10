@@ -20,4 +20,13 @@ router.put('/appointments/:id/status', requireRole('ADMIN', 'RECEPTION', 'TECHNI
 router.put('/appointments/:id/payment-status', requireRole('ADMIN', 'RECEPTION'), adminController.updatePaymentStatus);
 router.get('/cancelled-appointments', requireRole('ADMIN', 'RECEPTION'), adminController.getCancelledAppointments);
 
+// --- Rappels WhatsApp (10 min avant le RDV) : ne doit JAMAIS empêcher le serveur de démarrer ---
+try {
+  const reminders = require('../RND/reminders');
+  router.use(reminders.buildRouter(verifyToken, requireRole));
+  reminders.start();
+} catch (err) {
+  console.error('[reminders] module non chargé:', err.message);
+}
+
 module.exports = router;
