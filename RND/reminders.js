@@ -2,7 +2,7 @@
 const express = require('express');
 
 const WINDOW_MIN = 10;          // نرسل عندما يكون الموعد خلال 10 دقائق أو أقل
-const MIN_LEAD_MIN = 15;        // موعد حُجز قبل أقل من 15 د من وقته (زبون حاضر) => لا تذكير
+const MIN_LEAD_MIN = 15;       
 const TICK_MS = 60 * 1000;
 const FETCH_TIMEOUT_MS = 15000;
 
