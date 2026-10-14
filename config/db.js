@@ -22,25 +22,57 @@ const pool = mysql.createPool({
   connectTimeout: 20000
 });
 
-// Au démarrage, le réseau privé Railway (ou MySQL qui se réveille) peut ne pas être prêt :
-// on réessaie quelques fois au lieu d'afficher une seule erreur.
-async function testConnection(attempt = 1, max = 6) {
-  try {
-    const connection = await pool.getConnection();
-    await connection.ping();
-    console.log(`✅ MySQL connecté (tentative ${attempt})`);
-    connection.release();
-  } catch (error) {
-    if (attempt < max) {
-      const wait = attempt * 2000;
-      console.warn(`⏳ MySQL pas encore prêt (${error.code || error.message}) — nouvel essai dans ${wait / 1000}s`);
-      setTimeout(() => testConnection(attempt + 1, max), wait);
-    } else {
-      console.error('❌ MySQL injoignable après plusieurs essais :', error.code || error.message);
+// ---------------------------------------------------------------------------
+// Au réveil du conteneur Railway, le réseau privé (mysql.railway.internal) n'est
+// pas toujours prêt pendant les premières secondes : MySQL coupe alors la
+// connexion ("Connection lost: The server closed the connection").
+// On réessaie UNIQUEMENT l'ouverture de la connexion (avant l'envoi de la requête),
+// donc aucune requête n'est jamais exécutée deux fois.
+// ---------------------------------------------------------------------------
+const RETRY_CODES = new Set([
+  'PROTOCOL_CONNECTION_LOST', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT',
+  'EAI_AGAIN', 'ENOTFOUND', 'EHOSTUNREACH', 'PROTOCOL_SEQUENCE_TIMEOUT'
+]);
+const RETRY_DELAYS = [500, 1000, 2000, 3000];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const rawGetConnection = pool.getConnection.bind(pool);
+async function getConnection() {
+  for (let i = 0; ; i++) {
+    try {
+      return await rawGetConnection();
+    } catch (err) {
+      if (!RETRY_CODES.has(err && err.code) || i >= RETRY_DELAYS.length) throw err;
+      console.warn(`⏳ MySQL : ${err.code} — nouvel essai ${i + 1}/${RETRY_DELAYS.length} dans ${RETRY_DELAYS[i]} ms`);
+      await sleep(RETRY_DELAYS[i]);
     }
   }
 }
 
-testConnection();
+async function run(method, args) {
+  const conn = await getConnection();
+  try {
+    return await conn[method](...args);
+  } finally {
+    conn.release();
+  }
+}
+
+pool.getConnection = getConnection;
+pool.query = (...args) => run('query', args);
+pool.execute = (...args) => run('execute', args);
+
+// Vérification au démarrage (n'arrête jamais le serveur)
+(async () => {
+  try {
+    const conn = await getConnection();
+    await conn.ping();
+    conn.release();
+    console.log('✅ MySQL connecté');
+  } catch (error) {
+    console.error('❌ MySQL injoignable :', error.code || error.message,
+      `(hôte ${process.env.DB_HOST || '?'}:${process.env.DB_PORT || '?'})`);
+  }
+})();
 
 module.exports = pool;
