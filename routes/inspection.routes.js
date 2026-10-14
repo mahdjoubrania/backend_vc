@@ -24,6 +24,10 @@ router.get('/tole/:id', requireModuleAccess('reports'), inspectionCtrl.getToleRe
 router.get('/tole-report/:id', requireModuleAccess('reports'), inspectionCtrl.getToleReportById);
 router.get('/details/:inspection_id', inspectionCtrl.getInspectionDetails);
 
+// Code de vérification (QR) imprimé sur la page de garde du rapport
+const reportVerify = require('../verification/report-verify');
+router.get('/verify-code/:id', requireModuleAccess('reports'), reportVerify.staffCode);
+
 // ===== تعديل التقرير: للأدمن فقط (يُفرض بالسيرفر، ليس بالواجهة) =====
 const adminOnly = requireRole('ADMIN');
 router.get('/admin/:id', adminOnly, inspectionCtrl.adminGetReportForEdit);

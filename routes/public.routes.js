@@ -35,6 +35,11 @@ router.post('/quote', quoteLimiter, express.json({ limit: '2kb' }), pricingContr
 const trackLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, message: { success: false, code: 'RATE_LIMIT' } });
 router.post('/track', trackLimiter, express.json({ limit: '2kb' }), bookingController.trackBooking);
 
+// Vérification d'un rapport (QR code imprimé sur le rapport) — 60 / 15 min / IP
+const reportVerify = require('../verification/report-verify');
+const verifyLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false, message: { success: false, code: 'RATE_LIMIT' } });
+router.get('/verify/:code', verifyLimiter, reportVerify.publicVerify);
+
 // Corps trop gros / JSON invalide → réponse propre (sans détails internes)
 router.use((err, req, res, next) => {
   if (err && err.type === 'entity.too.large') return res.status(413).json({ success: false, code: 'RECEIPT_TOO_LARGE' });
