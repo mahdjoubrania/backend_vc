@@ -31,6 +31,10 @@ const quoteLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 60, standardHead
 router.get('/services', pricingController.publicServices);
 router.post('/quote', quoteLimiter, express.json({ limit: '2kb' }), pricingController.publicQuote);
 
+// Suivi d'une demande (référence + téléphone) — 20 essais / 15 min / IP contre la devinette
+const trackLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, message: { success: false, code: 'RATE_LIMIT' } });
+router.post('/track', trackLimiter, express.json({ limit: '2kb' }), bookingController.trackBooking);
+
 // Corps trop gros / JSON invalide → réponse propre (sans détails internes)
 router.use((err, req, res, next) => {
   if (err && err.type === 'entity.too.large') return res.status(413).json({ success: false, code: 'RECEIPT_TOO_LARGE' });

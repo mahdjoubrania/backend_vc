@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const db = require('../config/db');
 
 const pricing = require('../pricing/pricing.service');   // prestations + prix gérés par l'admin (table services)
+const notifier = require('./booking.notify');            // WhatsApp au client (acceptation / refus)
 
 // --- Règles métier (doivent rester alignées avec js/config.js du site public) ---
 const OPEN_DAYS = [6, 0, 1, 2, 3];                 // Sam → Mer (Jeu=4, Ven=5 fermés)
@@ -174,6 +175,7 @@ exports.createPublicBooking = async (req, res) => {
 // =========================================================
 
 // GET /api/admin/online-bookings?status=PENDING_REVIEW|ACCEPTED|REJECTED|ALL
+let notifyCols = null;   // null = inconnu, false = colonnes notify_* absentes
 exports.listBookings = async (req, res) => {
   try {
     const status = String(req.query.status || 'PENDING_REVIEW').toUpperCase();
@@ -184,23 +186,32 @@ exports.listBookings = async (req, res) => {
       where = 'WHERE ob.status = ?';
       params.push(status);
     }
-    const [rows] = await db.query(
-      `SELECT ob.id, ob.reference, ob.full_name, ob.phone, ob.vehicle, ob.vin, ob.plate,
+    const sql = () => `SELECT ob.id, ob.reference, ob.full_name, ob.phone, ob.vehicle, ob.vin, ob.plate,
               ob.service_id, ob.service_label, ob.base_price, ob.discount_percent, ob.discount_source,
               ob.discount_label, ob.amount_due, ob.appointment_date, ob.transaction_ref,
               ob.message, ob.lang, ob.status, ob.reject_reason, ob.reviewed_at,
-              ob.appointment_id, ob.created_at,
+              ob.appointment_id, ob.created_at,${notifyCols === false ? '' : ' ob.notify_status, ob.notify_error, ob.notified_at,'}
+              DATE_FORMAT(a.appointment_date, '%Y-%m-%d %H:%i:%s') AS final_date,
               br.mime_type AS receipt_type, br.size_bytes AS receipt_size,
               u.full_name AS reviewed_by_name
        FROM online_bookings ob
        LEFT JOIN booking_receipts br ON br.booking_id = ob.id
        LEFT JOIN users u ON u.id = ob.reviewed_by
+       LEFT JOIN appointments a ON a.id = ob.appointment_id
        ${where}
        ORDER BY ob.created_at DESC
-       LIMIT 200`,
-      params
-    );
-    res.json(rows);
+       LIMIT 200`;
+    let rows;
+    try {
+      [rows] = await db.query(sql(), params);
+    } catch (e) {
+      // sql/phase_tracking.sql pas encore exécuté → liste sans les colonnes notify_*
+      if (notifyCols === false || !(e && (e.code === 'ER_BAD_FIELD_ERROR' || e.errno === 1054))) throw e;
+      notifyCols = false;
+      [rows] = await db.query(sql(), params);
+    }
+    // Lien WhatsApp prêt à l'emploi pour prévenir le client manuellement
+    res.json(rows.map((r) => (r.status === 'PENDING_REVIEW' ? r : { ...r, wa_link: notifier.waLink(r.status, r) })));
   } catch (error) {
     console.error('listBookings error:', error);
     res.status(500).json({ message: 'Erreur serveur.' });
@@ -338,7 +349,9 @@ exports.acceptBooking = async (req, res) => {
       [result.insertId, req.user?.id || null, id]
     );
     await conn.commit();
-    res.json({ success: true, appointmentId: result.insertId, clientId, vehicleId });
+    // Après validation : message WhatsApp au client (n'annule jamais la validation en cas d'échec)
+    const notify = await notifier.notify('ACCEPTED', { ...bk, final_date: newDate || bk.appointment_date });
+    res.json({ success: true, appointmentId: result.insertId, clientId, vehicleId, notify });
   } catch (error) {
     await conn.rollback().catch(() => {});
     console.error('acceptBooking error:', error);
@@ -361,12 +374,75 @@ exports.rejectBooking = async (req, res) => {
       [reason, req.user?.id || null, id]
     );
     if (!r.affectedRows) return res.status(409).json({ message: 'Demande introuvable ou déjà traitée.' });
-    res.json({ success: true });
+    const [[bk]] = await db.query('SELECT * FROM online_bookings WHERE id = ?', [id]);
+    const notify = bk ? await notifier.notify('REJECTED', bk) : { status: 'OFF', wa_link: null };
+    res.json({ success: true, notify });
   } catch (error) {
     console.error('rejectBooking error:', error);
     res.status(500).json({ message: 'Erreur serveur.' });
   }
 };
 
+// =========================================================
+// POST /api/public/track  (public)   body : { reference, phone }
+// Le client suit sa demande avec SA référence + SON téléphone.
+// Réponse identique (404 NOT_FOUND) si la référence n'existe pas ou si le
+// téléphone ne correspond pas → impossible de deviner les demandes des autres.
+// Aucune donnée sensible renvoyée (pas de VIN, ni de n° de transaction, ni de nom complet).
+// =========================================================
+const REF_RE = /^VC-\d{6}-[A-Z0-9]{4}$/;
+function trackStage(status, apptStatus) {
+  if (status === 'PENDING_REVIEW') return 'REVIEW';
+  if (status === 'REJECTED') return 'REJECTED';
+  const a = String(apptStatus || '').toUpperCase();
+  if (a === 'COMPLETED') return 'COMPLETED';
+  if (a === 'CANCELLED' || a === 'CANCELED') return 'CANCELLED';
+  if (['READY_FOR_WORKSHOP', 'IN_PROGRESS', 'IN_INSPECTION', 'INSPECTION'].includes(a)) return 'IN_WORKSHOP';
+  return 'CONFIRMED';
+}
+
+exports.trackBooking = async (req, res) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    const reference = String(req.body?.reference || '').toUpperCase().replace(/\s+/g, '').slice(0, 20);
+    const phone = normalizePhone(req.body?.phone);
+    if (!REF_RE.test(reference) || !phone) return fail(res, 400, 'INVALID');
+
+    const [rows] = await db.query(
+      `SELECT ob.reference, ob.full_name, ob.phone, ob.vehicle, ob.service_id, ob.service_label,
+              DATE_FORMAT(ob.appointment_date, '%Y-%m-%d %H:%i') AS booked_date,
+              DATE_FORMAT(a.appointment_date, '%Y-%m-%d %H:%i') AS final_date,
+              ob.amount_due, ob.status, ob.reject_reason, a.status AS appt_status,
+              DATE_FORMAT(ob.created_at, '%Y-%m-%d %H:%i') AS created_at,
+              s.label_fr, s.label_ar, s.label_en
+       FROM online_bookings ob
+       LEFT JOIN appointments a ON a.id = ob.appointment_id
+       LEFT JOIN services s ON s.id = ob.service_id
+       WHERE ob.reference = ?
+       LIMIT 1`,
+      [reference]
+    );
+    const bk = rows[0];
+    if (!bk || normalizePhone(bk.phone) !== phone) return fail(res, 404, 'NOT_FOUND');
+
+    const stage = trackStage(bk.status, bk.appt_status);
+    res.json({
+      success: true,
+      reference: bk.reference,
+      first_name: String(bk.full_name || '').trim().split(/\s+/)[0] || '',
+      vehicle: bk.vehicle,
+      service: { fr: bk.label_fr || bk.service_label, ar: bk.label_ar || bk.service_label, en: bk.label_en || bk.service_label },
+      appointment_date: bk.final_date || bk.booked_date,
+      amount_due: bk.amount_due === null || bk.amount_due === undefined ? null : Number(bk.amount_due),
+      stage,
+      reject_reason: stage === 'REJECTED' ? bk.reject_reason : null,
+      created_at: bk.created_at
+    });
+  } catch (error) {
+    console.error('trackBooking error:', error);
+    res.status(500).json({ success: false, code: 'SERVER' });
+  }
+};
+
 // Exporté pour les tests
-exports._internal = { normalizePhone, sniffMime, decodeReceipt, algiersToday };
+exports._internal = { normalizePhone, sniffMime, decodeReceipt, algiersToday, trackStage };

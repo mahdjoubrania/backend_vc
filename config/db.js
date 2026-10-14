@@ -12,17 +12,32 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  timezone: '+01:00', 
-  dateStrings: true   
+  timezone: '+01:00',
+  dateStrings: true,
+  // Robustesse Railway : garder les connexions vivantes et recycler celles qui sont inactives
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10000,
+  maxIdle: 5,
+  idleTimeout: 60000,
+  connectTimeout: 20000
 });
 
-async function testConnection() {
+// Au démarrage, le réseau privé Railway (ou MySQL qui se réveille) peut ne pas être prêt :
+// on réessaie quelques fois au lieu d'afficher une seule erreur.
+async function testConnection(attempt = 1, max = 6) {
   try {
     const connection = await pool.getConnection();
-    console.log('✅ MySQL (vc_db)');
+    await connection.ping();
+    console.log(`✅ MySQL connecté (tentative ${attempt})`);
     connection.release();
   } catch (error) {
-    console.error('❌:', error.message);
+    if (attempt < max) {
+      const wait = attempt * 2000;
+      console.warn(`⏳ MySQL pas encore prêt (${error.code || error.message}) — nouvel essai dans ${wait / 1000}s`);
+      setTimeout(() => testConnection(attempt + 1, max), wait);
+    } else {
+      console.error('❌ MySQL injoignable après plusieurs essais :', error.code || error.message);
+    }
   }
 }
 
