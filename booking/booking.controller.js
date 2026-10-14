@@ -7,15 +7,9 @@
 const crypto = require('crypto');
 const db = require('../config/db');
 
+const pricing = require('../pricing/pricing.service');   // prestations + prix gérés par l'admin (table services)
+
 // --- Règles métier (doivent rester alignées avec js/config.js du site public) ---
-const SERVICES = {
-  complete:    'Inspection complète (6 modules)',
-  scanner:     'Scanner Diagnostique',
-  moteur:      'Moteur & Niveaux',
-  suspension:  'Suspension & Train',
-  tole:        'Tôle & Carrosserie',
-  kilometrage: 'Kilométrage & Conformité'
-};
 const OPEN_DAYS = [6, 0, 1, 2, 3];                 // Sam → Mer (Jeu=4, Ven=5 fermés)
 const SLOTS = ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00'];
 const MAX_DAYS_AHEAD = 90;
@@ -108,7 +102,10 @@ exports.createPublicBooking = async (req, res) => {
     if (name.length < 2 || vehicle.length < 2 || !date || !time || !serviceId) return fail(res, 400, 'REQUIRED');
     if (!phone) return fail(res, 400, 'PHONE');
     if (!VIN_RE.test(vin)) return fail(res, 400, 'VIN');
-    if (!SERVICES[serviceId]) return fail(res, 400, 'SERVICE');
+    // Prix calculé côté serveur (jamais celui envoyé par le navigateur)
+    const q = await pricing.quote(serviceId, phone);
+    if (q.error === 'NO_PRICE') return fail(res, 400, 'SERVICE_NO_PRICE');
+    if (q.error) return fail(res, 400, 'SERVICE');
     if (!SLOTS.includes(time)) return fail(res, 400, 'TIME');
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(new Date(date + 'T12:00:00Z'))) return fail(res, 400, 'DATE');
@@ -135,9 +132,11 @@ exports.createPublicBooking = async (req, res) => {
           const [r] = await conn.query(
             `INSERT INTO online_bookings
              (reference, full_name, phone, vehicle, vin, plate, service_id, service_label,
+              base_price, discount_percent, discount_source, discount_label, amount_due,
               appointment_date, transaction_ref, message, lang, client_ip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [reference, name, phone, vehicle, vin, plate, serviceId, SERVICES[serviceId],
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [reference, name, phone, vehicle, vin, plate, serviceId, q.service.label_fr,
+             q.base_price, q.discount_percent, q.discount_source, q.discount_label, q.amount,
              `${date} ${time}:00`, transaction, message, lang, req.ip || null]
           );
           bookingId = r.insertId;
@@ -154,7 +153,7 @@ exports.createPublicBooking = async (req, res) => {
         [bookingId, receipt.mime, receipt.buf.length, receipt.buf]
       );
       await conn.commit();
-      return res.status(201).json({ success: true, reference });
+      return res.status(201).json({ success: true, reference, amount: q.amount });
     } catch (e) {
       await conn.rollback().catch(() => {});
       throw e;
@@ -184,7 +183,8 @@ exports.listBookings = async (req, res) => {
     }
     const [rows] = await db.query(
       `SELECT ob.id, ob.reference, ob.full_name, ob.phone, ob.vehicle, ob.vin, ob.plate,
-              ob.service_id, ob.service_label, ob.appointment_date, ob.transaction_ref,
+              ob.service_id, ob.service_label, ob.base_price, ob.discount_percent, ob.discount_source,
+              ob.discount_label, ob.amount_due, ob.appointment_date, ob.transaction_ref,
               ob.message, ob.lang, ob.status, ob.reject_reason, ob.reviewed_at,
               ob.appointment_id, ob.created_at,
               br.mime_type AS receipt_type, br.size_bytes AS receipt_size,
@@ -273,9 +273,11 @@ async function findOrCreateVehicle(conn, clientId, vehicleText, vin, plate) {
 exports.acceptBooking = async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'ID invalide.' });
-  const totalAmount = Math.max(0, Number(req.body?.totalAmount) || 0);
-  const versement = Math.max(0, Number(req.body?.versement) || 0);
-  if (totalAmount > 0 && versement > totalAmount) return res.status(400).json({ message: 'Le versement ne peut pas dépasser le prix total.' });
+  // Par défaut : prix et versement = montant payé en ligne (paiement intégral)
+  const rawTotal = req.body?.totalAmount, rawVers = req.body?.versement;
+  let totalAmount = rawTotal === undefined || rawTotal === '' ? null : Math.max(0, Number(rawTotal) || 0);
+  let versement = rawVers === undefined || rawVers === '' ? null : Math.max(0, Number(rawVers) || 0);
+  if (totalAmount !== null && versement !== null && totalAmount > 0 && versement > totalAmount) return res.status(400).json({ message: 'Le versement ne peut pas dépasser le prix total.' });
   // Optionnel : la réception peut déplacer le créneau au moment de la validation ("YYYY-MM-DD HH:MM")
   let newDate = null;
   if (req.body?.appointmentDate) {
@@ -292,6 +294,10 @@ exports.acceptBooking = async (req, res) => {
     const bk = rows[0];
     if (bk.status !== 'PENDING_REVIEW') { await conn.rollback(); return res.status(409).json({ message: 'Demande déjà traitée.' }); }
 
+    if (totalAmount === null) totalAmount = Number(bk.amount_due) || 0;
+    if (versement === null) versement = Number(bk.amount_due) || 0;
+    if (totalAmount > 0 && versement > totalAmount) { await conn.rollback(); return res.status(400).json({ message: 'Le versement ne peut pas dépasser le prix total.' }); }
+
     const clientId = await findOrCreateClient(conn, bk.full_name, bk.phone);
     const vehicleId = await findOrCreateVehicle(conn, clientId, bk.vehicle, bk.vin, bk.plate);
 
@@ -299,6 +305,7 @@ exports.acceptBooking = async (req, res) => {
       `Réservation en ligne ${bk.reference}`,
       `Véhicule : ${bk.vehicle}${bk.plate ? ' (' + bk.plate + ')' : ''}`,
       `Transaction BaridiMob : ${bk.transaction_ref}`,
+      bk.discount_percent > 0 ? `Remise ${Number(bk.discount_percent)} % (${bk.discount_source === 'LOYALTY' ? 'client fidèle' : (bk.discount_label || 'promotion')}) — prix de base ${bk.base_price} DA` : '',
       bk.message ? `Remarque client : ${bk.message}` : ''
     ].filter(Boolean).join(' | ');
 
@@ -359,4 +366,4 @@ exports.rejectBooking = async (req, res) => {
 };
 
 // Exporté pour les tests
-exports._internal = { normalizePhone, sniffMime, decodeReceipt, algiersToday, SERVICES };
+exports._internal = { normalizePhone, sniffMime, decodeReceipt, algiersToday };

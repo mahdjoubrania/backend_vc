@@ -6,6 +6,7 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const bookingController = require('../booking/booking.controller');
+const pricingController = require('../pricing/pricing.controller');
 
 const router = express.Router();
 
@@ -24,6 +25,11 @@ router.post(
   express.json({ limit: '8mb' }),
   bookingController.createPublicBooking
 );
+
+// Catalogue public (prix + promotions en cours) et devis (avec fidélité si le téléphone est connu)
+const quoteLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false, message: { success: false, code: 'RATE_LIMIT' } });
+router.get('/services', pricingController.publicServices);
+router.post('/quote', quoteLimiter, express.json({ limit: '2kb' }), pricingController.publicQuote);
 
 // Corps trop gros / JSON invalide → réponse propre (sans détails internes)
 router.use((err, req, res, next) => {
