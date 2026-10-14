@@ -21,6 +21,8 @@ const SLOTS = ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '1
 const MAX_DAYS_AHEAD = 90;
 const MAX_RECEIPT_BYTES = 5 * 1024 * 1024;
 const LANGS = ['fr', 'ar', 'en'];
+const VIN_RE = /^[A-HJ-NPR-Z0-9]{17}$/;               // ISO 3779 : 17 caractères, sans I/O/Q
+const cleanVin = v => String(v == null ? '' : v).toUpperCase().replace(/[\s.\-]/g, '');
 
 // --- Utilitaires ---
 const str = (v, max) => String(v == null ? '' : v).replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, max);
@@ -81,7 +83,7 @@ const fail = (res, http, code) => res.status(http).json({ success: false, code }
 
 // =========================================================
 // POST /api/public/bookings  (public)
-// Body JSON : { name, phone, vehicle, plate, service_id, date, time,
+// Body JSON : { name, phone, vehicle, vin, plate, service_id, date, time,
 //               transaction, message, lang, receipt (data URL base64), website (piège) }
 // =========================================================
 exports.createPublicBooking = async (req, res) => {
@@ -94,6 +96,7 @@ exports.createPublicBooking = async (req, res) => {
     const name = str(b.name, 100);
     const phone = normalizePhone(b.phone);
     const vehicle = str(b.vehicle, 100);
+    const vin = cleanVin(b.vin);
     const plate = str(b.plate, 40) || null;
     const serviceId = str(b.service_id, 30);
     const date = str(b.date, 10);
@@ -104,6 +107,7 @@ exports.createPublicBooking = async (req, res) => {
 
     if (name.length < 2 || vehicle.length < 2 || !date || !time || !serviceId) return fail(res, 400, 'REQUIRED');
     if (!phone) return fail(res, 400, 'PHONE');
+    if (!VIN_RE.test(vin)) return fail(res, 400, 'VIN');
     if (!SERVICES[serviceId]) return fail(res, 400, 'SERVICE');
     if (!SLOTS.includes(time)) return fail(res, 400, 'TIME');
 
@@ -130,10 +134,10 @@ exports.createPublicBooking = async (req, res) => {
         try {
           const [r] = await conn.query(
             `INSERT INTO online_bookings
-             (reference, full_name, phone, vehicle, plate, service_id, service_label,
+             (reference, full_name, phone, vehicle, vin, plate, service_id, service_label,
               appointment_date, transaction_ref, message, lang, client_ip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [reference, name, phone, vehicle, plate, serviceId, SERVICES[serviceId],
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [reference, name, phone, vehicle, vin, plate, serviceId, SERVICES[serviceId],
              `${date} ${time}:00`, transaction, message, lang, req.ip || null]
           );
           bookingId = r.insertId;
@@ -179,7 +183,7 @@ exports.listBookings = async (req, res) => {
       params.push(status);
     }
     const [rows] = await db.query(
-      `SELECT ob.id, ob.reference, ob.full_name, ob.phone, ob.vehicle, ob.plate,
+      `SELECT ob.id, ob.reference, ob.full_name, ob.phone, ob.vehicle, ob.vin, ob.plate,
               ob.service_id, ob.service_label, ob.appointment_date, ob.transaction_ref,
               ob.message, ob.lang, ob.status, ob.reject_reason, ob.reviewed_at,
               ob.appointment_id, ob.created_at,
@@ -239,16 +243,23 @@ async function findOrCreateClient(conn, fullName, phone) {
   return created.insertId;
 }
 
-async function findOrCreateVehicle(conn, clientId, vehicleText, plate) {
+async function findOrCreateVehicle(conn, clientId, vehicleText, vin, plate) {
+  const cleanV = vin ? String(vin).trim() : '';
   const cleanPlate = plate ? String(plate).trim() : '';
-  if (!cleanPlate) return null;                       // même règle que createAppointment : sans plaque ni VIN → pas de véhicule
+  if (!cleanV && !cleanPlate) return null;
   try {
-    const [byPlate] = await conn.query('SELECT id FROM vehicules WHERE license_plate = ? LIMIT 1', [cleanPlate]);
-    if (byPlate.length) return byPlate[0].id;
+    if (cleanV) {
+      const [byVin] = await conn.query('SELECT id FROM vehicules WHERE vin_number = ? LIMIT 1', [cleanV]);
+      if (byVin.length) return byVin[0].id;
+    }
+    if (cleanPlate) {
+      const [byPlate] = await conn.query('SELECT id FROM vehicules WHERE license_plate = ? LIMIT 1', [cleanPlate]);
+      if (byPlate.length) return byPlate[0].id;
+    }
     const [make, ...rest] = String(vehicleText || '').trim().split(/\s+/);
     const [created] = await conn.query(
-      'INSERT INTO vehicules (client_id, make, model, license_plate, vin_number) VALUES (?, ?, ?, ?, NULL)',
-      [clientId, make || 'Inconnu', rest.join(' ') || 'Inconnu', cleanPlate]
+      'INSERT INTO vehicules (client_id, make, model, license_plate, vin_number) VALUES (?, ?, ?, ?, ?)',
+      [clientId, make || 'Inconnu', rest.join(' ') || 'Inconnu', cleanPlate || null, cleanV || null]
     );
     return created.insertId;
   } catch (err) {
@@ -257,13 +268,21 @@ async function findOrCreateVehicle(conn, clientId, vehicleText, plate) {
   }
 }
 
-// PUT /api/admin/online-bookings/:id/accept   body: { totalAmount?, versement? }
+// PUT /api/admin/online-bookings/:id/accept   body: { totalAmount?, versement?, appointmentDate? }
 // Paiement vérifié → crée le rendez-vous dans appointments (statut PENDING, ADVANCE_PAID)
 exports.acceptBooking = async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'ID invalide.' });
   const totalAmount = Math.max(0, Number(req.body?.totalAmount) || 0);
   const versement = Math.max(0, Number(req.body?.versement) || 0);
+  if (totalAmount > 0 && versement > totalAmount) return res.status(400).json({ message: 'Le versement ne peut pas dépasser le prix total.' });
+  // Optionnel : la réception peut déplacer le créneau au moment de la validation ("YYYY-MM-DD HH:MM")
+  let newDate = null;
+  if (req.body?.appointmentDate) {
+    const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})$/.exec(String(req.body.appointmentDate).trim());
+    if (!m) return res.status(400).json({ message: 'Date du rendez-vous invalide.' });
+    newDate = `${m[1]} ${m[2]}:00`;
+  }
 
   const conn = await db.getConnection();
   try {
@@ -274,7 +293,7 @@ exports.acceptBooking = async (req, res) => {
     if (bk.status !== 'PENDING_REVIEW') { await conn.rollback(); return res.status(409).json({ message: 'Demande déjà traitée.' }); }
 
     const clientId = await findOrCreateClient(conn, bk.full_name, bk.phone);
-    const vehicleId = await findOrCreateVehicle(conn, clientId, bk.vehicle, bk.plate);
+    const vehicleId = await findOrCreateVehicle(conn, clientId, bk.vehicle, bk.vin, bk.plate);
 
     const notes = [
       `Réservation en ligne ${bk.reference}`,
@@ -284,7 +303,7 @@ exports.acceptBooking = async (req, res) => {
     ].filter(Boolean).join(' | ');
 
     const paymentStatus = totalAmount > 0 && versement >= totalAmount ? 'FULLY_PAID' : 'ADVANCE_PAID';
-    const base = [clientId, bk.phone, vehicleId, null, bk.appointment_date, totalAmount, versement, paymentStatus, 'PENDING', bk.service_label];
+    const base = [clientId, bk.phone, vehicleId, bk.vin || null, newDate || bk.appointment_date, totalAmount, versement, paymentStatus, 'PENDING', bk.service_label];
 
     let result;
     try {
