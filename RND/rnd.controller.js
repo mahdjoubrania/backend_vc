@@ -470,7 +470,7 @@ exports.createAppointment = async (req, res) => {
 
   } catch (error) {
     console.error('Error creating appointment:', error);
-    res.status(500).json({ message: 'Erreur lors de la création du RDV: ' + error.message });
+    res.status(500).json({ message: 'Erreur lors de la création du RDV.' });
   }
 };
 
@@ -622,7 +622,7 @@ exports.updateAppointment = async (req, res) => {
     res.json({ message: 'Rendez-vous mis à jour avec succès' });
   } catch (error) {
     console.error('Update appointment error:', error);
-    res.status(500).json({ message: 'Erreur lors de la modification: ' + error.message });
+    res.status(500).json({ message: 'Erreur lors de la modification.' });
   }
 };
 // 9. جلب المواعيد الملغاة والغائبة

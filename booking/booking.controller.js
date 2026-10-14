@@ -87,6 +87,9 @@ exports.createPublicBooking = async (req, res) => {
     // Piège anti-robot : champ caché que les humains laissent vide
     if (b.website) return res.status(201).json({ success: true, reference: newReference() });
 
+    // Le client doit avoir accepté les conditions de réservation (case à cocher du site)
+    if (b.accept_terms !== true) return fail(res, 400, 'TERMS');
+
     const name = str(b.name, 100);
     const phone = normalizePhone(b.phone);
     const vehicle = str(b.vehicle, 100);
