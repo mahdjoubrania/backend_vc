@@ -23,7 +23,8 @@ exports.searchClient = async (req, res) => {
       'SELECT * FROM clients WHERE phone LIKE ? OR full_name LIKE ?', 
       [`%${query}%`, `%${query}%`]
     );
-    res.json(rows);
+    res.json(rows);     
+      
   } catch (err) {
     console.error('Error in searchClient:', err);
     res.status(500).json({ message: 'Erreur serveur. Veuillez réessayer plus tard.' });
