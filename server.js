@@ -48,6 +48,7 @@ app.use('/api/admin', require('./routes/admin.routes'));
 app.use('/api/admin', require('./routes/rnd.routes'));
 app.use('/api/admin', require('./routes/booking.routes'));   // réservations en ligne (avant client.routes)
 app.use('/api/admin', require('./routes/pricing.routes'));   // tarifs, promotions, fidélité (ADMIN)
+app.use('/api/admin', require('./routes/reviews.routes'));   // avis clients (modération ADMIN)
 app.use('/api/admin', require('./routes/client.routes')); 
 app.use('/api/vehicules', require('./routes/vehicules.routes'));
 app.use('/api/inspection', require('./routes/inspection.routes'));

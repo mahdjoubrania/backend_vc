@@ -28,6 +28,10 @@ router.get('/details/:inspection_id', inspectionCtrl.getInspectionDetails);
 const reportVerify = require('../verification/report-verify');
 router.get('/verify-code/:id', requireModuleAccess('reports'), reportVerify.staffCode);
 
+// Lien d'avis client (inspection terminée) — envoyé par WhatsApp depuis le rapport
+const reviews = require('../reviews/reviews.controller');
+router.get('/review-link/:id', requireModuleAccess('reports'), reviews.staffInvite);
+
 // ===== تعديل التقرير: للأدمن فقط (يُفرض بالسيرفر، ليس بالواجهة) =====
 const adminOnly = requireRole('ADMIN');
 router.get('/admin/:id', adminOnly, inspectionCtrl.adminGetReportForEdit);

@@ -40,6 +40,13 @@ const reportVerify = require('../verification/report-verify');
 const verifyLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false, message: { success: false, code: 'RATE_LIMIT' } });
 router.get('/verify/:code', verifyLimiter, reportVerify.publicVerify);
 
+// Avis clients : liste publique (approuvés), invitation, envoi (10 / heure / IP)
+const reviews = require('../reviews/reviews.controller');
+const reviewLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false, message: { success: false, code: 'RATE_LIMIT' } });
+router.get('/reviews', reviews.publicList);
+router.get('/reviews/invite/:token', verifyLimiter, reviews.publicInvite);
+router.post('/reviews', reviewLimiter, express.json({ limit: '4kb' }), reviews.publicSubmit);
+
 // Corps trop gros / JSON invalide → réponse propre (sans détails internes)
 router.use((err, req, res, next) => {
   if (err && err.type === 'entity.too.large') return res.status(413).json({ success: false, code: 'RECEIPT_TOO_LARGE' });
