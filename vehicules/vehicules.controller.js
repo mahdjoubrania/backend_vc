@@ -44,7 +44,14 @@ exports.updateVehicle = async (req, res) => {
 exports.deleteVehicle = async (req, res) => {
   const { vehicleId } = req.params;
   try {
-    await db.query('DELETE FROM vehicules WHERE id = ?', [vehicleId]);
+    // Un véhicule déjà contrôlé ne peut pas être supprimé (cela effaçait en cascade RDV + rapports,
+    // y compris ceux d'autres clients ayant possédé le même véhicule)
+    const [used] = await db.query('SELECT COUNT(*) AS n FROM appointments WHERE vehicle_id = ?', [vehicleId]);
+    if (used[0].n > 0) {
+      return res.status(409).json({ message: `Suppression impossible : ce véhicule figure dans ${used[0].n} rendez-vous (historique et rapports conservés).` });
+    }
+    const [r] = await db.query('DELETE FROM vehicules WHERE id = ?', [vehicleId]);
+    if (!r.affectedRows) return res.status(404).json({ message: 'Véhicule introuvable.' });
     res.json({ message: 'Véhicule supprimé' });
   } catch (err) {
     console.error('Error in deleteVehicle:', err);

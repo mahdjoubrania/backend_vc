@@ -1,5 +1,5 @@
 // =========================================================
-// Avis clients — modération par l'ADMIN (monté sur /api/admin)
+// Avis clients Google — statistiques pour l'ADMIN (monté sur /api/admin)
 // Middlewares posés route par route (pas de router.use sans chemin).
 // =========================================================
 const express = require('express');
@@ -10,7 +10,7 @@ const { requireRole } = require('../middleware/auth.middleware');
 
 const admin = [verifyToken, requireRole('ADMIN')];
 
-router.get('/reviews', ...admin, reviews.adminList);
-router.put('/reviews/:id', ...admin, express.json({ limit: '2kb' }), reviews.adminModerate);
+// Statistiques des avis Google (note, nombre d'avis, liens envoyés / ouverts)
+router.get('/reviews/stats', ...admin, reviews.adminStats);
 
 module.exports = router;

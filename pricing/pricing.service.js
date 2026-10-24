@@ -1,9 +1,10 @@
 // =========================================================
 // VérifCar — moteur de prix (source de vérité côté serveur)
 // Règle : prix final = prix de base − le PLUS GRAND des rabais applicables
-//         (promotion active OU fidélité), jamais cumulés.
+//         (promotion active, fidélité OU code promo), jamais cumulés.
 // =========================================================
 const db = require('../config/db');
+const promoCodes = require('./promo-codes');
 
 const LANGS = ['fr', 'ar', 'en'];
 
@@ -68,8 +69,8 @@ async function loyaltyFor(phone, conn = db) {
   return { percent: ok ? s.percent : 0, completed: Number(completed), manual: false };
 }
 
-// Devis complet pour une prestation (+ téléphone facultatif pour la fidélité)
-async function quote(serviceId, phone, conn = db) {
+// Devis complet pour une prestation (+ téléphone facultatif pour la fidélité, + code promo facultatif)
+async function quote(serviceId, phone, conn = db, promoCode = null) {
   const [[svc]] = await conn.query('SELECT id, label_fr, label_ar, label_en, base_price, active FROM services WHERE id = ?', [serviceId]);
   if (!svc || !svc.active) return { error: 'SERVICE' };
   if (svc.base_price === null || svc.base_price === undefined) return { error: 'NO_PRICE', service: svc };
@@ -80,15 +81,34 @@ async function quote(serviceId, phone, conn = db) {
   let discount = { percent: 0, source: null, label: null };
   if (promo && promo.percent > discount.percent) discount = { percent: promo.percent, source: 'PROMO', label: promo.label, ends_on: promo.ends_on };
   if (loyal.percent > discount.percent) discount = { percent: loyal.percent, source: 'LOYALTY', label: 'Client fidèle' };
+  let amount = discount.percent > 0 ? applyPercent(base, discount.percent) : base;
+
+  // Code promo : appliqué seulement s'il donne un prix plus bas (jamais cumulé)
+  let code = null, codeStatus = null;
+  if (promoCode !== null && promoCode !== undefined && String(promoCode).trim() !== '') {
+    const pc = await promoCodes.findCode(promoCode, conn);
+    codeStatus = promoCodes.status(pc, [svc.id]);
+    if (codeStatus === 'OK') {
+      code = pc.code;
+      const withCode = promoCodes.apply(pc, base);
+      if (withCode < amount) {
+        amount = withCode;
+        const pct = base > 0 ? Math.round(((base - withCode) / base) * 10000) / 100 : 0;
+        discount = { percent: pct, source: 'CODE', label: pc.label || pc.code };
+      }
+    }
+  }
 
   return {
+    promo_code: code,                 // code valide saisi (même si une autre remise était plus grande)
+    promo_code_status: codeStatus,    // null | OK | INVALID | INACTIVE | NOT_YET | EXPIRED | SERVICE
     service: svc,
     base_price: base,
     discount_percent: discount.percent,
     discount_source: discount.source,
     discount_label: discount.label,
     promo_ends_on: discount.ends_on || null,
-    amount: discount.percent > 0 ? applyPercent(base, discount.percent) : base
+    amount
   };
 }
 

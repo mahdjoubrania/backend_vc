@@ -5,37 +5,52 @@ const db = require('../config/db');
 // (Voir server.js — on ajoutera une vérification au démarrage à l'étape 5.)
 const SECRET_KEY = process.env.JWT_SECRET;
 
-function verifyToken(req, res, next) {
-  try {
-    // 1. استخراج التوكن من الهيدر Authorization
-    const authHeader = req.headers.authorization;
+// Le rôle et l'état actif sont relus en base (cache 30 s) : un compte désactivé ou rétrogradé
+// perd ses droits presque immédiatement, au lieu de garder son jeton valable 8 h.
+const userCache = new Map();
+const CACHE_MS = 30 * 1000;
+async function loadUser(id) {
+  const hit = userCache.get(id);
+  if (hit && hit.at > Date.now() - CACHE_MS) return hit.user;
+  const [rows] = await db.query('SELECT id, role, is_active FROM users WHERE id = ? LIMIT 1', [id]);
+  const user = rows[0] || null;
+  userCache.set(id, { at: Date.now(), user });
+  if (userCache.size > 500) userCache.delete(userCache.keys().next().value);
+  return user;
+}
+function forgetUser(id) { userCache.delete(Number(id)); userCache.delete(String(id)); }
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        error: 'Utilisateur non authentifié (Jeton manquant)'
-      });
-    }
-
-    const token = authHeader.split(' ')[1];
-
-    // 2. فك تشفير التوكن والتحقق من صحته
-    const decodedToken = jwt.verify(token, SECRET_KEY);
-
-    // 3. ربط بيانات المستخدم بالطلب req.user
-    req.user = {
-      id: decodedToken.id || decodedToken.userId,
-      role: (decodedToken.role || '').toUpperCase()
-    };
-
-    next(); // الانتقال إلى Controller
-  } catch (error) {
-    console.error('❌ Auth Middleware Error:', error.message);
-    return res.status(401).json({
-      success: false,
-      error: 'Session expirée ou jeton invalide'
-    });
+async function verifyToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ success: false, error: 'Utilisateur non authentifié (Jeton manquant)' });
   }
+
+  let decodedToken;
+  try {
+    decodedToken = jwt.verify(authHeader.split(' ')[1], SECRET_KEY, { algorithms: ['HS256'] });
+  } catch (error) {
+    return res.status(401).json({ success: false, error: 'Session expirée ou jeton invalide' });
+  }
+
+  const id = Number(decodedToken.id || decodedToken.userId);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(401).json({ success: false, error: 'Session expirée ou jeton invalide' });
+  }
+
+  let user;
+  try {
+    user = await loadUser(id);
+  } catch (err) {
+    console.error('❌ Auth Middleware DB Error:', err.message);
+    return res.status(503).json({ success: false, error: 'Service momentanément indisponible. Réessayez.' });
+  }
+  if (!user || !Number(user.is_active)) {
+    return res.status(401).json({ success: false, error: 'Compte désactivé ou supprimé. Veuillez vous reconnecter.' });
+  }
+
+  req.user = { id, role: String(user.role || '').toUpperCase() };
+  next();
 }
 
 // جديد: التحقق من صلاحية الدور (Role-Based Access Control)
@@ -100,5 +115,6 @@ function requireModuleAccess(moduleKey) {
 }
 
 module.exports = verifyToken;
+module.exports.forgetUser = forgetUser;
 module.exports.requireRole = requireRole;
 module.exports.requireModuleAccess = requireModuleAccess;

@@ -3,6 +3,7 @@
 // =========================================================
 const db = require('../config/db');
 const P = require('./pricing.service');
+const PC = require('./promo-codes');
 
 const str = (v, max) => String(v == null ? '' : v).replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, max);
 const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
@@ -19,18 +20,20 @@ exports.publicServices = async (req, res) => {
   } catch (e) { err500(res, 'publicServices', e); }
 };
 
-// POST /api/public/quote  { service_id, phone? }
+// POST /api/public/quote  { service_id, phone?, promo_code? }
 exports.publicQuote = async (req, res) => {
   try {
-    const q = await P.quote(str(req.body?.service_id, 30), req.body?.phone);
+    const q = await P.quote(str(req.body?.service_id, 30), req.body?.phone, undefined, str(req.body?.promo_code, 40) || null);
     if (q.error) return res.status(400).json({ success: false, code: q.error });
     res.json({
       success: true,
       base_price: q.base_price,
       discount_percent: q.discount_percent,
       discount_source: q.discount_source,           // PROMO | LOYALTY | null
-      discount_label: q.discount_source === 'PROMO' ? q.discount_label : null,
+      discount_label: (q.discount_source === 'PROMO' || q.discount_source === 'CODE') ? q.discount_label : null,
       promo_ends_on: q.promo_ends_on,
+      promo_code: q.promo_code,
+      promo_code_status: q.promo_code_status,
       amount: q.amount
     });
   } catch (e) { err500(res, 'publicQuote', e); }
@@ -199,4 +202,101 @@ exports.setClientLoyalty = async (req, res) => {
     if (!r.affectedRows) return res.status(404).json({ message: 'Client introuvable.' });
     res.json({ success: true });
   } catch (e) { err500(res, 'setClientLoyalty', e); }
+};
+
+
+/* ------------------------- CODES PROMO ------------------------- */
+
+function readCode(b) {
+  const code = PC.normCode(b.code);
+  if (!PC.CODE_RE.test(code)) return { error: 'Code invalide : 3 à 30 caractères (lettres, chiffres, - ou _), sans espace.' };
+  const type = b.discount_type === 'AMOUNT' ? 'AMOUNT' : 'PERCENT';
+  const value = Number(b.value);
+  if (type === 'PERCENT' && !pctOk(value)) return { error: 'La remise doit être comprise entre 1 et 90 %.' };
+  if (type === 'AMOUNT' && !(Number.isFinite(value) && value >= 10 && value <= 1000000)) return { error: 'Le montant de la remise doit être d\'au moins 10 DA.' };
+  const label = str(b.label, 100) || null;
+  const ids = Array.isArray(b.service_ids) ? [...new Set(b.service_ids.map((x) => str(x, 30)).filter((x) => PC.SERVICE_RE.test(x)))] : [];
+  const starts_on = b.starts_on ? String(b.starts_on) : null;
+  const ends_on = b.ends_on ? String(b.ends_on) : null;
+  if ((starts_on && !isDate(starts_on)) || (ends_on && !isDate(ends_on))) return { error: 'Dates invalides.' };
+  if (starts_on && ends_on && ends_on < starts_on) return { error: 'La date de fin est avant la date de début.' };
+  return { code, label, discount_type: type, value: type === 'AMOUNT' ? Math.round(value) : value,
+    service_ids: ids.length ? ids.join(',') : null, starts_on, ends_on, active: b.active === undefined ? 1 : (b.active ? 1 : 0) };
+}
+
+// GET /api/admin/pricing/promo-codes
+exports.listCodes = async (req, res) => {
+  try {
+    await PC.ensureTable();
+    const [rows] = await db.query('SELECT * FROM promo_codes ORDER BY active DESC, created_at DESC');
+    const uses = await PC.usageCounts();
+    const today = PC.algiersToday();
+    res.json({
+      today,
+      services: (await P.getServices()).map((s) => ({ id: s.id, label_fr: s.label_fr, base_price: s.base_price === null ? null : Number(s.base_price) })),
+      codes: rows.map((r) => { const c = PC.rowToCode(r); return { ...c, uses: uses[c.code] || 0, state: PC.status(c, c.service_ids) }; })
+    });
+  } catch (e) { err500(res, 'listCodes', e); }
+};
+
+// POST /api/admin/pricing/promo-codes
+exports.createCode = async (req, res) => {
+  try {
+    const c = readCode(req.body || {});
+    if (c.error) return res.status(400).json({ message: c.error });
+    await PC.ensureTable();
+    const [r] = await db.query(
+      'INSERT INTO promo_codes (code, label, discount_type, value, service_ids, starts_on, ends_on, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [c.code, c.label, c.discount_type, c.value, c.service_ids, c.starts_on, c.ends_on, c.active]);
+    res.status(201).json({ success: true, id: r.insertId });
+  } catch (e) {
+    if (e.code === 'ER_DUP_ENTRY') return res.status(409).json({ message: 'Ce code existe déjà.' });
+    err500(res, 'createCode', e);
+  }
+};
+
+// PUT /api/admin/pricing/promo-codes/:id
+exports.updateCode = async (req, res) => {
+  try {
+    const c = readCode(req.body || {});
+    if (c.error) return res.status(400).json({ message: c.error });
+    await PC.ensureTable();
+    const [r] = await db.query(
+      'UPDATE promo_codes SET code = ?, label = ?, discount_type = ?, value = ?, service_ids = ?, starts_on = ?, ends_on = ?, active = ? WHERE id = ?',
+      [c.code, c.label, c.discount_type, c.value, c.service_ids, c.starts_on, c.ends_on, c.active, Number(req.params.id)]);
+    if (!r.affectedRows) return res.status(404).json({ message: 'Code introuvable.' });
+    res.json({ success: true });
+  } catch (e) {
+    if (e.code === 'ER_DUP_ENTRY') return res.status(409).json({ message: 'Ce code existe déjà.' });
+    err500(res, 'updateCode', e);
+  }
+};
+
+// DELETE /api/admin/pricing/promo-codes/:id  (les réservations gardent le code dans leur historique)
+exports.deleteCode = async (req, res) => {
+  try {
+    await PC.ensureTable();
+    const [r] = await db.query('DELETE FROM promo_codes WHERE id = ?', [Number(req.params.id)]);
+    if (!r.affectedRows) return res.status(404).json({ message: 'Code introuvable.' });
+    res.json({ success: true });
+  } catch (e) { err500(res, 'deleteCode', e); }
+};
+
+// POST /api/admin/promo-codes/check  { code, services: [id ou libellé], amount }  (ADMIN + RECEPTION)
+// Vérifie un code au moment de créer un rendez-vous à la réception et calcule le nouveau prix.
+exports.checkCode = async (req, res) => {
+  try {
+    const b = req.body || {};
+    const services = (Array.isArray(b.services) ? b.services : []).map(PC.serviceIdFromAny).filter(Boolean);
+    const pc = await PC.findCode(b.code);
+    const st = PC.status(pc, services);
+    if (st !== 'OK') return res.json({ valid: false, status: st, message: PC.MESSAGES[st] });
+    const amount = Math.max(0, Math.round(Number(b.amount) || 0));
+    res.json({
+      valid: true, status: 'OK', code: pc.code, label: pc.label,
+      discount_type: pc.discount_type, value: pc.value,
+      amount, new_amount: amount > 0 ? PC.apply(pc, amount) : null,
+      message: pc.discount_type === 'AMOUNT' ? `Code valable : −${pc.value} DA` : `Code valable : −${pc.value} %`
+    });
+  } catch (e) { err500(res, 'checkCode', e); }
 };

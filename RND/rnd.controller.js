@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const promoCodes = require('../pricing/promo-codes');
 
 // 1. إحصائيات وتتبعات المواعد (Analytics)
 exports.getRdvAnalytics = async (req, res) => {
@@ -129,6 +130,23 @@ exports.getRdvAnalytics = async (req, res) => {
 };
 
 // 2. ملخص لوحة التحكم (Dashboard Summary)
+// GET /api/admin/appointments/outstanding — montant total restant à percevoir (ADMIN + RECEPTION)
+// Même calcul que la bannière du tableau de bord administrateur.
+exports.getOutstanding = async (req, res) => {
+  try {
+    const [[row]] = await db.query(
+      `SELECT COALESCE(SUM(total_amount - versement), 0) AS total,
+              SUM(CASE WHEN total_amount > versement THEN 1 ELSE 0 END) AS count
+       FROM appointments
+       WHERE status NOT IN ('CANCELLED', 'CANCELED', 'ANNULE', 'NO_SHOW', 'ABSENT')`
+    );
+    res.json({ total: Number(row.total) || 0, count: Number(row.count) || 0 });
+  } catch (e) {
+    console.error('getOutstanding error:', e);
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+};
+
 exports.getDashboardSummary = async (req, res) => {
   try {
     const [userCounts] = await db.query(`
@@ -204,6 +222,41 @@ exports.getDashboardSummary = async (req, res) => {
       });
     });
     const inspectionTypes = Object.entries(typeCounts).map(([label, count]) => ({ label, count }));
+
+    // Types d'inspection par jour (13 derniers mois) : la page Statistiques filtre par période.
+    // Chaque libellé (cases de la réception, réservations du site…) est ramené à son identifiant de prestation.
+    const serviceLabels = {};
+    const labelToId = {};
+    try {
+      const [svcRows] = await db.query('SELECT id, label_fr, label_ar, label_en FROM services ORDER BY sort_order, id');
+      svcRows.forEach((s) => {
+        serviceLabels[s.id] = s.label_fr;
+        [s.label_fr, s.label_ar, s.label_en].filter(Boolean).forEach((l) => {
+          labelToId[String(l).trim().toLowerCase()] = s.id;
+          labelToId[String(l).replace(/\s*\(.*\)\s*$/, '').trim().toLowerCase()] = s.id;
+        });
+      });
+    } catch (e) { /* table services absente */ }
+    const typeId = (part) => promoCodes.serviceIdFromAny(part) || labelToId[part.toLowerCase()] || labelToId[part.replace(/\s*\(.*\)\s*$/, '').trim().toLowerCase()] || null;
+    const [dailyRaw] = await db.query(`
+      SELECT DATE_FORMAT(appointment_date, '%Y-%m-%d') AS date, COALESCE(service_type, '') AS label, COUNT(*) AS count
+      FROM appointments
+      WHERE appointment_date >= DATE_SUB(CURDATE(), INTERVAL 13 MONTH)
+        AND status NOT IN ('CANCELLED', 'CANCELED', 'ANNULE')
+      GROUP BY DATE_FORMAT(appointment_date, '%Y-%m-%d'), service_type
+    `);
+    const dailyMap = {};
+    dailyRaw.forEach((row) => {
+      const parts = String(row.label).split(',').map((s) => s.trim()).filter(Boolean);
+      (parts.length ? parts : ['Non spécifié']).forEach((part) => {
+        const id = typeId(part);
+        const key = id || part;
+        if (!id && !serviceLabels[key]) serviceLabels[key] = part;
+        const k = row.date + '|' + key;
+        dailyMap[k] = (dailyMap[k] || 0) + Number(row.count);
+      });
+    });
+    const inspectionTypesDaily = Object.entries(dailyMap).map(([k, count]) => { const [date, id] = k.split('|'); return { date, id, count }; });
 
     // أداء التقنيين: عدد الوحدات المنفَّذة فعلياً لكل تقني، عبر الجداول الستة مجتمعة
     const [moduleCounts] = await db.query(`
@@ -283,6 +336,8 @@ exports.getDashboardSummary = async (req, res) => {
       todayStats,
       revenue: revenueData || [],
       inspectionTypes: inspectionTypes || [],
+      inspectionTypesDaily,
+      serviceLabels,
       technicianPerformance,
       alerts
     });
@@ -366,28 +421,22 @@ exports.getAppointments = async (req, res) => {
 // كان الإنشاء يتم فقط عند وجود VIN، فتضيع الماركة والترقيم لو تُرك VIN فارغاً (وهو اختياري بالنموذج).
 // فشل إنشاء المركبة لا يوقف حفظ الموعد نفسه.
 async function findOrCreateVehicle(clientId, { vin, licensePlate, make, model }) {
-  const cleanVin = vin ? String(vin).trim() : '';
-  const cleanPlate = licensePlate ? String(licensePlate).trim() : '';
-  if (!cleanVin && !cleanPlate) return null;
-
-  try {
-    if (cleanVin) {
-      const [byVin] = await db.query('SELECT id FROM vehicules WHERE vin_number = ? LIMIT 1', [cleanVin]);
-      if (byVin.length > 0) return byVin[0].id;
-    }
-    if (cleanPlate) {
-      const [byPlate] = await db.query('SELECT id FROM vehicules WHERE license_plate = ? LIMIT 1', [cleanPlate]);
-      if (byPlate.length > 0) return byPlate[0].id;
-    }
-    const [created] = await db.query(
-      'INSERT INTO vehicules (client_id, make, model, license_plate, vin_number) VALUES (?, ?, ?, ?, ?)',
-      [clientId, make || 'Inconnu', model || 'Inconnu', cleanPlate || null, cleanVin || null]
-    );
-    return created.insertId;
-  } catch (err) {
-    console.warn('⚠️ Création/recherche du véhicule impossible, rendez-vous enregistré sans véhicule:', err.message);
-    return null;
+  const cleanVin = vin ? String(vin).trim().slice(0, 50) : '';
+  const cleanPlate = licensePlate ? String(licensePlate).trim().slice(0, 30) : '';
+  if (cleanVin) {
+    const [byVin] = await db.query('SELECT id FROM vehicules WHERE vin_number = ? LIMIT 1', [cleanVin]);
+    if (byVin.length > 0) return byVin[0].id;
   }
+  if (cleanPlate) {
+    const [byPlate] = await db.query('SELECT id FROM vehicules WHERE license_plate = ? LIMIT 1', [cleanPlate]);
+    if (byPlate.length > 0) return byPlate[0].id;
+  }
+  // appointments.vehicle_id est obligatoire : on crée toujours un véhicule (même sans VIN ni immatriculation)
+  const [created] = await db.query(
+    'INSERT INTO vehicules (client_id, make, model, license_plate, vin_number) VALUES (?, ?, ?, ?, ?)',
+    [clientId, String(make || 'Inconnu').trim().slice(0, 50) || 'Inconnu', String(model || 'Inconnu').trim().slice(0, 50) || 'Inconnu', cleanPlate, cleanVin || null]
+  );
+  return created.insertId;
 }
 
 exports.createAppointment = async (req, res) => {
@@ -405,11 +454,24 @@ exports.createAppointment = async (req, res) => {
       paymentStatus, 
       status,
       typedeverification,
-      notes
+      notes,
+      promoCode
     } = req.body;
 
     if (!phone) {
       return res.status(400).json({ message: 'Le numéro de téléphone est obligatoire.' });
+    }
+    if (!appointmentDate || !/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(String(appointmentDate))) {
+      return res.status(400).json({ message: 'Date du rendez-vous invalide.' });
+    }
+    // Code promo saisi à la réception : revérifié ici (le prix est déjà recalculé à l'écran)
+    let validCode = null;
+    if (promoCode && String(promoCode).trim()) {
+      const services = String(typedeverification || '').split(',').map((s) => promoCodes.serviceIdFromAny(s)).filter(Boolean);
+      const pc = await promoCodes.findCode(promoCode);
+      const st = promoCodes.status(pc, services);
+      if (st !== 'OK') return res.status(400).json({ message: promoCodes.MESSAGES[st] });
+      validCode = pc.code;
     }
 
     let clientId;
@@ -461,6 +523,11 @@ exports.createAppointment = async (req, res) => {
       );
     }
 
+    if (validCode) {
+      await db.query('UPDATE appointments SET promo_code = ? WHERE id = ?', [validCode, result.insertId])
+        .catch((e) => console.warn('⚠️ promo_code non enregistré:', e.message));
+    }
+
     res.status(201).json({ 
       message: 'Rendez-vous créé avec succès', 
       appointmentId: result.insertId,
@@ -484,6 +551,19 @@ exports.updateAppointmentStatus = async (req, res) => {
     if (!VALID_STATUSES.includes(status)) {
       return res.status(400).json({ message: 'Statut invalide.' });
     }
+    // Technicien : uniquement entrée/sortie d'atelier sur un RDV actif.
+    // (Terminer = bouton « Terminer le contrôle » ; annuler / absent = réception ou admin)
+    const role = String(req.user?.role || '').toUpperCase();
+    if (role === 'TECHNICIAN' || role === 'TECHNICIEN') {
+      if (!['READY_FOR_WORKSHOP', 'IN_WORKSHOP', 'IN_PROGRESS'].includes(status)) {
+        return res.status(403).json({ message: 'Action réservée à la réception.' });
+      }
+      const [cur] = await db.query('SELECT status FROM appointments WHERE id = ? LIMIT 1', [id]);
+      if (!cur.length) return res.status(404).json({ message: 'Rendez-vous introuvable.' });
+      if (['COMPLETED', 'CANCELLED', 'ABSENT'].includes(String(cur[0].status || '').toUpperCase())) {
+        return res.status(409).json({ message: 'Ce rendez-vous est déjà clôturé.' });
+      }
+    }
 
     let query = `UPDATE appointments SET status = ?`;
     let queryParams = [status];
@@ -496,13 +576,14 @@ exports.updateAppointmentStatus = async (req, res) => {
 
     if (cancel_reason) {
       query += `, cancel_reason = ?`;
-      queryParams.push(cancel_reason);
+      queryParams.push(String(cancel_reason).slice(0, 255));
     }
 
     query += ` WHERE id = ?`;
     queryParams.push(id);
 
-    await db.query(query, queryParams);
+    const [upd] = await db.query(query, queryParams);
+    if (!upd.affectedRows) return res.status(404).json({ message: 'Rendez-vous introuvable.' });
     res.json({ message: 'Statut mis à jour avec succès' });
   } catch (error) {
     console.error('Update status error:', error);

@@ -1,8 +1,16 @@
 
 const express = require('express');
 
-const WINDOW_MIN = 10;          // نرسل عندما يكون الموعد خلال 10 دقائق أو أقل
-const MIN_LEAD_MIN = 15;       
+// Étapes de rappel (minutes avant le rendez-vous). online=true → seulement les réservations du site.
+// À chaque passage on n'envoie que l'étape « en cours » ; une étape ratée (serveur arrêté,
+// RDV pris trop tard) est marquée SKIPPED pour ne jamais envoyer deux rappels d'un coup.
+const STAGES = [
+  { key: 'H2', min: 120, online: true, label: '2 h' },
+  { key: 'M30', min: 30, online: false, label: '30 min' },
+  { key: 'M10', min: 10, online: false, label: '10 min' }
+];
+const WINDOW_MIN = Math.max(...STAGES.map((s) => s.min));
+const LEAD_MARGIN_MIN = 5;     // RDV créé moins de (étape + 5 min) avant → cette étape est sautée
 const TICK_MS = 60 * 1000;
 const FETCH_TIMEOUT_MS = 15000;
 
@@ -61,6 +69,20 @@ function buildPayload(cfg, to, params) {
       components: [{ type: 'body', parameters: params.map((text) => ({ type: 'text', text })) }]
     }
   };
+}
+
+// Différence en minutes entre deux chaînes « YYYY-MM-DD HH:MM:SS » de la même zone horaire
+function minutesBetween(fromStr, toStr) {
+  const p = (s) => Date.parse(String(s).replace(' ', 'T') + 'Z');
+  return (p(toStr) - p(fromStr)) / 60000;
+}
+
+// Étape à envoyer maintenant pour un RDV (ou null) + étapes plus anciennes à marquer « ratées »
+function dueStage(minutesLeft, isOnline) {
+  const list = STAGES.filter((s) => isOnline || !s.online).sort((a, b) => a.min - b.min);
+  const due = list.find((s) => minutesLeft <= s.min);
+  if (!due) return { due: null, missed: [] };
+  return { due, missed: list.filter((s) => s.min > due.min) };
 }
 
 function classifyError(status, body, networkErr) {
@@ -125,6 +147,17 @@ function create({ db, fetchFn, env = process.env, log = console, nowFn = () => n
     if (columnsOk === true) return true;
     try {
       await db.query('SELECT reminder_sent_at, reminder_status, reminder_error, reminder_message_id FROM appointments LIMIT 1');
+      await db.query(`CREATE TABLE IF NOT EXISTS appointment_reminders (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        appointment_id INT NOT NULL,
+        stage VARCHAR(8) NOT NULL,
+        status VARCHAR(16) NOT NULL,
+        error VARCHAR(255) NULL,
+        message_id VARCHAR(100) NULL,
+        created_at DATETIME NULL,
+        UNIQUE KEY uq_appt_stage (appointment_id, stage),
+        KEY idx_appt (appointment_id)
+      )`);
       columnsOk = true;
     } catch (e) {
       if (e && (e.code === 'ER_BAD_FIELD_ERROR' || e.errno === 1054)) columnsOk = false;
@@ -138,39 +171,69 @@ function create({ db, fetchFn, env = process.env, log = console, nowFn = () => n
            COALESCE(NULLIF(TRIM(CONCAT(COALESCE(v.make,''),' ',COALESCE(v.model,''))),''), NULL) AS vehicle_name,
            DATE_FORMAT(a.appointment_date, '%Y-%m-%d %H:%i:%s') AS appt_str,
            DATE_FORMAT(a.appointment_date, '%H:%i') AS appt_hm,
-           TIMESTAMPDIFF(MINUTE, CONVERT_TZ(a.created_at, '+00:00', '+01:00'), a.appointment_date) AS lead_min
+           TIMESTAMPDIFF(MINUTE, CONVERT_TZ(a.created_at, '+00:00', '+01:00'), a.appointment_date) AS lead_min,
+           EXISTS(SELECT 1 FROM online_bookings ob WHERE ob.appointment_id = a.id) AS is_online
     FROM appointments a
     LEFT JOIN clients c ON a.client_id = c.id
     LEFT JOIN vehicules v ON a.vehicle_id = v.id`;
 
-  async function sendOne(c, row, { force = false } = {}) {
+  const NOW_SQL = "CONVERT_TZ(NOW(),'+00:00','+01:00')";
+
+  async function markStage(apptId, stage, status, error) {
+    await db.query(
+      `INSERT INTO appointment_reminders (appointment_id, stage, status, error, created_at) VALUES (?, ?, ?, ?, ${NOW_SQL})
+       ON DUPLICATE KEY UPDATE status = status`, [apptId, stage, status, error ? String(error).slice(0, 255) : null]);
+  }
+
+  // Envoi d'une étape automatique : la ligne (appointment_id, stage) unique sert de verrou
+  async function sendStage(c, row, stage) {
+    const to = normalizePhone(row.phone);
+    if (!to) {
+      await markStage(row.id, stage.key, 'FAILED', 'Numéro invalide: ' + String(row.phone || '').slice(0, 40));
+      await db.query("UPDATE appointments SET reminder_status='FAILED', reminder_error=? WHERE id=?", ['Numéro invalide', row.id]);
+      return { ok: false, status: 'FAILED' };
+    }
+    try {
+      await db.query(`INSERT INTO appointment_reminders (appointment_id, stage, status, created_at) VALUES (?, ?, 'SENDING', ${NOW_SQL})`, [row.id, stage.key]);
+    } catch (e) {
+      if (e && (e.code === 'ER_DUP_ENTRY' || e.errno === 1062)) return { ok: false, status: 'SKIPPED' };
+      throw e;
+    }
+    const params = buildParams({ name: row.client_name, time: row.appt_hm, vehicle: row.vehicle_name });
+    const r = await sendTemplate(c, to, params);
+    if (r.ok) {
+      await db.query("UPDATE appointment_reminders SET status='SENT', message_id=?, error=NULL WHERE appointment_id=? AND stage=?", [r.messageId, row.id, stage.key]);
+      await db.query(`UPDATE appointments SET reminder_status='SENT', reminder_sent_at=${NOW_SQL}, reminder_message_id=?, reminder_error=NULL WHERE id=?`, [r.messageId, row.id]);
+      log.log(`[reminders] SENT ${stage.key} id=${row.id} to=${to}`);
+      return { ok: true, status: 'SENT' };
+    }
+    if (r.transient) {
+      await db.query("DELETE FROM appointment_reminders WHERE appointment_id=? AND stage=? AND status='SENDING'", [row.id, stage.key]);
+      log.warn(`[reminders] transient failure ${stage.key} id=${row.id}: ${r.message} (retry next tick)`);
+      return { ok: false, status: 'RETRY' };
+    }
+    await db.query("UPDATE appointment_reminders SET status='FAILED', error=? WHERE appointment_id=? AND stage=?", [r.message.slice(0, 255), row.id, stage.key]);
+    await db.query("UPDATE appointments SET reminder_status='FAILED', reminder_error=? WHERE id=? AND (reminder_status IS NULL OR reminder_status<>'SENT')", [r.message.slice(0, 255), row.id]);
+    log.error(`[reminders] FAILED ${stage.key} id=${row.id}: ${r.message}`);
+    return { ok: false, status: 'FAILED' };
+  }
+
+  // Envoi manuel (bouton « Envoyer maintenant » de la réception)
+  async function sendOne(c, row) {
     const to = normalizePhone(row.phone);
     if (!to) {
       await db.query("UPDATE appointments SET reminder_status='FAILED', reminder_error=? WHERE id=?", ['Numéro invalide: ' + String(row.phone || '').slice(0, 40), row.id]);
-      return { ok: false, status: 'FAILED', message: 'رقم الهاتف غير صالح' };
+      return { ok: false, status: 'FAILED', message: 'Numéro de téléphone invalide' };
     }
-    const params = buildParams({ name: row.client_name, time: row.appt_hm, vehicle: row.vehicle_name });
-
-    // claim ذري: يضمن عدم الإرسال مرتين حتى مع أكثر من نسخة سيرفر
-    const where = force
-      ? "id=? AND (reminder_status IS NULL OR reminder_status<>'SENDING')"
-      : 'id=? AND reminder_sent_at IS NULL AND reminder_status IS NULL';
-    const [claim] = await db.query(`UPDATE appointments SET reminder_status='SENDING', reminder_error=NULL WHERE ${where}`, [row.id]);
-    if (!claim || claim.affectedRows !== 1) return { ok: false, status: 'SKIPPED', message: 'تمت معالجته مسبقاً' };
-
-    const r = await sendTemplate(c, to, params);
+    const [claim] = await db.query("UPDATE appointments SET reminder_status='SENDING', reminder_error=NULL WHERE id=? AND (reminder_status IS NULL OR reminder_status<>'SENDING')", [row.id]);
+    if (!claim || claim.affectedRows !== 1) return { ok: false, status: 'SKIPPED', message: 'Envoi déjà en cours' };
+    const r = await sendTemplate(c, to, buildParams({ name: row.client_name, time: row.appt_hm, vehicle: row.vehicle_name }));
     if (r.ok) {
-      await db.query("UPDATE appointments SET reminder_status='SENT', reminder_sent_at=CONVERT_TZ(NOW(),'+00:00','+01:00'), reminder_message_id=?, reminder_error=NULL WHERE id=?", [r.messageId, row.id]);
-      log.log(`[reminders] SENT id=${row.id} to=${to}`);
+      await db.query(`UPDATE appointments SET reminder_status='SENT', reminder_sent_at=${NOW_SQL}, reminder_message_id=?, reminder_error=NULL WHERE id=?`, [r.messageId, row.id]);
+      log.log(`[reminders] SENT (manuel) id=${row.id} to=${to}`);
       return { ok: true, status: 'SENT' };
     }
-    if (r.transient && !force) {
-      await db.query('UPDATE appointments SET reminder_status=NULL, reminder_error=? WHERE id=?', [r.message, row.id]);
-      log.warn(`[reminders] transient failure id=${row.id}: ${r.message} (retry next tick)`);
-      return { ok: false, status: 'RETRY', message: r.message };
-    }
     await db.query("UPDATE appointments SET reminder_status='FAILED', reminder_error=? WHERE id=?", [r.message.slice(0, 255), row.id]);
-    log.error(`[reminders] FAILED id=${row.id}: ${r.message}`);
     return { ok: false, status: 'FAILED', message: r.message };
   }
 
@@ -180,32 +243,45 @@ function create({ db, fetchFn, env = process.env, log = console, nowFn = () => n
     running = true;
     try {
       const ok = await checkColumns();
-      if (!ok && c.mode === 'live') {
-        if (!warnedMissing) { warnedMissing = true; log.error('[reminders] أعمدة reminder_* غير موجودة: شغّل phase_whatsapp_reminders.sql ثم أعد التشغيل. التذكير متوقف.'); }
+      if (!ok) {
+        if (!warnedMissing) { warnedMissing = true; log.error('[reminders] colonnes reminder_* absentes : rappels arrêtés (redémarrer le serveur pour lancer les migrations).'); }
         return;
       }
       const now = nowFn();
       const nowStr = algiersString(now);
       const endStr = algiersString(new Date(now.getTime() + WINDOW_MIN * 60000));
-      const filter = ok ? 'AND a.reminder_sent_at IS NULL AND a.reminder_status IS NULL' : '';
       const [rows] = await db.query(
         `${BASE_SELECT}
          WHERE a.status IN ('PENDING','READY_FOR_WORKSHOP')
            AND a.appointment_date > ? AND a.appointment_date <= ?
-           AND a.tlf IS NOT NULL AND TRIM(a.tlf) <> '' ${filter}`, [nowStr, endStr]);
+           AND a.tlf IS NOT NULL AND TRIM(a.tlf) <> ''`, [nowStr, endStr]);
+      if (!rows.length) return;
+      const [done] = await db.query(
+        `SELECT appointment_id, stage FROM appointment_reminders WHERE appointment_id IN (${rows.map(() => '?').join(',')})`, rows.map((r) => r.id));
+      const has = new Set(done.map((d) => `${d.appointment_id}:${d.stage}`));
 
       for (const row of rows) {
-        if (c.mode === 'dry-run') {
-          if (dryLogged.has(row.id)) continue;
-          dryLogged.add(row.id);
-          log.log(`[reminders][DRY-RUN] id=${row.id} to=${normalizePhone(row.phone)} params=${JSON.stringify(buildParams({ name: row.client_name, time: row.appt_hm, vehicle: row.vehicle_name }))}`);
-          continue;
-        }
-        if (row.lead_min !== null && row.lead_min !== undefined && Number(row.lead_min) < MIN_LEAD_MIN) {
-          await db.query("UPDATE appointments SET reminder_status='SKIPPED', reminder_error='Rendez-vous pris moins de 15 min avant' WHERE id=? AND reminder_status IS NULL", [row.id]);
-          continue;
-        }
-        try { await sendOne(c, row); } catch (e) { log.error('[reminders] erreur sur id=' + row.id, e.message); }
+        const left = minutesBetween(nowStr, row.appt_str);
+        const { due, missed } = dueStage(left, !!Number(row.is_online));
+        if (!due) continue;
+        try {
+          for (const m of missed) {
+            if (!has.has(`${row.id}:${m.key}`)) { await markStage(row.id, m.key, 'SKIPPED', 'Étape manquée'); has.add(`${row.id}:${m.key}`); }
+          }
+          if (has.has(`${row.id}:${due.key}`)) continue;
+          if (row.lead_min !== null && row.lead_min !== undefined && Number(row.lead_min) < due.min + LEAD_MARGIN_MIN) {
+            await markStage(row.id, due.key, 'SKIPPED', 'Rendez-vous pris trop tard pour ce rappel');
+            continue;
+          }
+          if (c.mode === 'dry-run') {
+            const k = `${row.id}:${due.key}`;
+            if (dryLogged.has(k)) continue;
+            dryLogged.add(k);
+            log.log(`[reminders][DRY-RUN] ${due.key} id=${row.id} to=${normalizePhone(row.phone)} params=${JSON.stringify(buildParams({ name: row.client_name, time: row.appt_hm, vehicle: row.vehicle_name }))}`);
+            continue;
+          }
+          await sendStage(c, row, due);
+        } catch (e) { log.error('[reminders] erreur sur id=' + row.id, e.message); }
       }
     } catch (e) {
       log.error('[reminders] tick error:', e && e.message);
@@ -232,9 +308,21 @@ function create({ db, fetchFn, env = process.env, log = console, nowFn = () => n
     router.get('/appointments/reminders-today', requireRole('ADMIN', 'RECEPTION'), async (req, res) => {
       const c = cfg();
       try {
-        const [rows] = await db.query(`SELECT id, reminder_status, reminder_sent_at, reminder_error
-          FROM appointments WHERE DATE(appointment_date) = DATE(CONVERT_TZ(NOW(), '+00:00', '+01:00'))`);
-        res.json({ mode: c.mode, items: rows });
+        await checkColumns();
+        const [rows] = await db.query(`SELECT a.id, a.reminder_status, a.reminder_sent_at, a.reminder_error,
+            EXISTS(SELECT 1 FROM online_bookings ob WHERE ob.appointment_id = a.id) AS is_online
+          FROM appointments a WHERE DATE(a.appointment_date) = DATE(CONVERT_TZ(NOW(), '+00:00', '+01:00'))`);
+        const stages = {};
+        if (rows.length) {
+          const [st] = await db.query(`SELECT appointment_id, stage, status, error FROM appointment_reminders
+            WHERE appointment_id IN (${rows.map(() => '?').join(',')})`, rows.map((r) => r.id));
+          st.forEach((s) => { (stages[s.appointment_id] = stages[s.appointment_id] || {})[s.stage] = { status: s.status, error: s.error }; });
+        }
+        res.json({
+          mode: c.mode,
+          stages: STAGES.map((s) => ({ key: s.key, label: s.label, online: s.online })),
+          items: rows.map((r) => ({ ...r, is_online: !!Number(r.is_online), stages: stages[r.id] || {} }))
+        });
       } catch (e) {
         res.json({ mode: c.mode, items: [], migrationNeeded: !!(e && e.code === 'ER_BAD_FIELD_ERROR') });
       }
@@ -246,11 +334,11 @@ function create({ db, fetchFn, env = process.env, log = console, nowFn = () => n
       const id = Number(req.params.id);
       if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'ID invalide.' });
       try {
-        if (!(await checkColumns())) return res.status(500).json({ message: 'Migration SQL requise (phase_whatsapp_reminders.sql).' });
+        if (!(await checkColumns())) return res.status(500).json({ message: 'Migration requise : redémarrez le serveur.' });
         const [rows] = await db.query(`${BASE_SELECT} WHERE a.id = ?`, [id]);
         if (!rows.length) return res.status(404).json({ message: 'Rendez-vous introuvable.' });
         if (c.mode === 'dry-run') return res.json({ message: 'Mode test (dry-run) : rien envoyé.', dryRun: true });
-        const r = await sendOne(c, rows[0], { force: true });
+        const r = await sendOne(c, rows[0]);
         if (r.ok) return res.json({ message: 'Rappel envoyé.' });
         return res.status(r.status === 'SKIPPED' ? 409 : 502).json({ message: 'Échec : ' + r.message });
       } catch (e) {
@@ -289,7 +377,7 @@ function getDefault() {
 }
 
 module.exports = {
-  create, getDefault, normalizePhone, buildParams, buildPayload, classifyError, algiersString, readConfig, cleanParam,
+  create, getDefault, normalizePhone, dueStage, minutesBetween, STAGES, buildParams, buildPayload, classifyError, algiersString, readConfig, cleanParam,
   start: () => getDefault().start(),
   buildRouter: (...a) => getDefault().buildRouter(...a)
 };

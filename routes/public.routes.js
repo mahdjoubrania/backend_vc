@@ -4,48 +4,54 @@
 // de taille dédiée (reçu de 5 Mo en base64 ≈ 7 Mo).
 // =========================================================
 const express = require('express');
-const rateLimit = require('express-rate-limit');
+const rateLimit = require('../middleware/rate-limit');
 const bookingController = require('../booking/booking.controller');
 const pricingController = require('../pricing/pricing.controller');
 
 const router = express.Router();
 
-// Max 5 réservations par heure et par IP (anti-spam)
+// Max 8 réservations ENREGISTRÉES par heure et par IP (anti-spam).
+// Les tentatives refusées (erreur de saisie) ne comptent pas : plusieurs clients partagent
+// souvent la même IP chez les opérateurs mobiles.
 const bookingLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
+  max: 8,
+  skipFailedRequests: true,
   message: { success: false, code: 'RATE_LIMIT' }
 });
+// garde-fou contre les essais automatiques en boucle (réussis ou non)
+const bookingBurst = rateLimit({ windowMs: 60 * 60 * 1000, max: 40, message: { success: false, code: 'RATE_LIMIT' } });
 
 router.post(
   '/bookings',
+  bookingBurst,
   bookingLimiter,
   express.json({ limit: '8mb' }),
   bookingController.createPublicBooking
 );
 
 // Catalogue public (prix + promotions en cours) et devis (avec fidélité si le téléphone est connu)
-const quoteLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false, message: { success: false, code: 'RATE_LIMIT' } });
+const quoteLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 40, message: { success: false, code: 'RATE_LIMIT' } });
 router.get('/services', pricingController.publicServices);
 router.post('/quote', quoteLimiter, express.json({ limit: '2kb' }), pricingController.publicQuote);
 
 // Suivi d'une demande (référence + téléphone) — 20 essais / 15 min / IP contre la devinette
-const trackLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, message: { success: false, code: 'RATE_LIMIT' } });
+const trackLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, message: { success: false, code: 'RATE_LIMIT' } });
 router.post('/track', trackLimiter, express.json({ limit: '2kb' }), bookingController.trackBooking);
 
 // Vérification d'un rapport (QR code imprimé sur le rapport) — 60 / 15 min / IP
 const reportVerify = require('../verification/report-verify');
-const verifyLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false, message: { success: false, code: 'RATE_LIMIT' } });
+const verifyLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: { success: false, code: 'RATE_LIMIT' } });
 router.get('/verify/:code', verifyLimiter, reportVerify.publicVerify);
+// Rapport complet pour le client (code QR + téléphone) — 20 / 15 min / IP
+const reportLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, message: { success: false, code: 'RATE_LIMIT' } });
+router.post('/report/:code', reportLimiter, express.json({ limit: '2kb' }), reportVerify.publicReport);
 
-// Avis clients : liste publique (approuvés), invitation, envoi (10 / heure / IP)
+// Avis Google : note + 5 derniers avis (cache serveur 6 h) ; clic sur le lien « laisser un avis » (statistiques)
 const reviews = require('../reviews/reviews.controller');
-const reviewLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false, message: { success: false, code: 'RATE_LIMIT' } });
-router.get('/reviews', reviews.publicList);
-router.get('/reviews/invite/:token', verifyLimiter, reviews.publicInvite);
-router.post('/reviews', reviewLimiter, express.json({ limit: '4kb' }), reviews.publicSubmit);
+const clickLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, message: { success: false, code: 'RATE_LIMIT' } });
+router.get('/google-reviews', reviews.publicGoogle);
+router.post('/review-click', clickLimiter, express.json({ limit: '1kb' }), reviews.publicClick);
 
 // Corps trop gros / JSON invalide → réponse propre (sans détails internes)
 router.use((err, req, res, next) => {

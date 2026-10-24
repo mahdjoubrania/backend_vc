@@ -51,7 +51,19 @@ exports.updateClient = async (req, res) => {
 exports.deleteClient = async (req, res) => {
   const { clientId } = req.params;
   try {
-    await db.query('DELETE FROM clients WHERE id = ?', [clientId]);
+    // Protection de l'historique : un client qui a des rendez-vous (donc des rapports) ne peut pas être supprimé
+    // (la suppression effaçait en cascade ses RDV, inspections et rapports imprimés avec QR).
+    const [used] = await db.query('SELECT COUNT(*) AS n FROM appointments WHERE client_id = ?', [clientId]);
+    if (used[0].n > 0) {
+      return res.status(409).json({ message: `Suppression impossible : ce client a ${used[0].n} rendez-vous enregistré(s). Son historique et ses rapports doivent être conservés.` });
+    }
+    const [vUsed] = await db.query(
+      'SELECT COUNT(*) AS n FROM appointments a JOIN vehicules v ON v.id = a.vehicle_id WHERE v.client_id = ?', [clientId]);
+    if (vUsed[0].n > 0) {
+      return res.status(409).json({ message: 'Suppression impossible : un véhicule de ce client figure dans des rendez-vous existants.' });
+    }
+    const [r] = await db.query('DELETE FROM clients WHERE id = ?', [clientId]);
+    if (!r.affectedRows) return res.status(404).json({ message: 'Client introuvable.' });
     res.json({ message: 'Client supprimé' });
   } catch (err) {
     console.error('Error in deleteClient:', err);

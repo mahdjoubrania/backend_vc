@@ -20,4 +20,11 @@ router.put('/pricing/loyalty', ...admin, c.updateLoyalty);
 router.get('/pricing/loyal-clients', ...admin, c.loyalClients);
 router.put('/pricing/clients/:id/loyalty', ...admin, c.setClientLoyalty);
 
+// Codes promo : gestion (ADMIN) + vérification à la réception (ADMIN, RECEPTION)
+router.get('/pricing/promo-codes', ...admin, c.listCodes);
+router.post('/pricing/promo-codes', ...admin, c.createCode);
+router.put('/pricing/promo-codes/:id', ...admin, c.updateCode);
+router.delete('/pricing/promo-codes/:id', ...admin, c.deleteCode);
+router.post('/promo-codes/check', verifyToken, requireRole('ADMIN', 'RECEPTION'), c.checkCode);
+
 module.exports = router;

@@ -38,6 +38,16 @@ function algiersToday() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Algiers', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 }
 
+// Heure actuelle à Alger + n minutes ("HH:MM", plafonnée à 23:59)
+function algiersTimePlus(minutes) {
+  const now = new Date(Date.now() + minutes * 60000);
+  const p = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Algiers', hour: '2-digit', minute: '2-digit', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+  const g = (t) => (p.find((x) => x.type === t) || {}).value;
+  const d = `${g('year')}-${g('month')}-${g('day')}`;
+  if (d !== algiersToday()) return '23:59';
+  return `${g('hour') === '24' ? '00' : g('hour')}:${g('minute')}`;
+}
+
 function addDays(isoDate, n) {
   const d = new Date(isoDate + 'T12:00:00Z');
   d.setUTCDate(d.getUTCDate() + n);
@@ -95,28 +105,37 @@ exports.createPublicBooking = async (req, res) => {
     const phone = normalizePhone(b.phone);
     const vehicle = str(b.vehicle, 100);
     const vin = cleanVin(b.vin);
-    const plate = str(b.plate, 40) || null;
+    const plate = str(b.plate, 30) || null;          // colonne vehicules.license_plate = 30
     const serviceId = str(b.service_id, 30);
     const date = str(b.date, 10);
     const time = str(b.time, 5);
     const transaction = str(b.transaction, 40);
     const message = str(b.message, 500) || null;
     const lang = LANGS.includes(b.lang) ? b.lang : 'fr';
+    const promoCode = str(b.promo_code, 40) || null;
+    const pm = String(b.payment_method || '').toUpperCase();
+    const paymentMethod = pm === 'BARIDIMOB' || pm === 'CCP' ? pm : null;
 
     if (name.length < 2 || vehicle.length < 2 || !date || !time || !serviceId) return fail(res, 400, 'REQUIRED');
     if (!phone) return fail(res, 400, 'PHONE');
     if (!VIN_RE.test(vin)) return fail(res, 400, 'VIN');
     // Prix calculé côté serveur (jamais celui envoyé par le navigateur)
-    const q = await pricing.quote(serviceId, phone);
+    const q = await pricing.quote(serviceId, phone, undefined, promoCode);
     if (q.error === 'NO_PRICE') return fail(res, 400, 'SERVICE_NO_PRICE');
     if (q.error) return fail(res, 400, 'SERVICE');
+    // code saisi mais refusé : le client doit le corriger ou le retirer (le montant payé en dépend)
+    if (promoCode && q.promo_code_status !== 'OK') return res.status(400).json({ success: false, code: 'PROMO_CODE', promo_status: q.promo_code_status });
     if (!SLOTS.includes(time)) return fail(res, 400, 'TIME');
 
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(new Date(date + 'T12:00:00Z'))) return fail(res, 400, 'DATE');
+    // date réelle uniquement (2026-02-30 était accepté puis refusé par MySQL)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(new Date(date + 'T12:00:00Z')) ||
+        new Date(date + 'T12:00:00Z').toISOString().slice(0, 10) !== date) return fail(res, 400, 'DATE');
     const today = algiersToday();
     if (date < today) return fail(res, 400, 'DATE_PAST');
     if (date > addDays(today, MAX_DAYS_AHEAD)) return fail(res, 400, 'DATE_TOO_FAR');
     if (!OPEN_DAYS.includes(new Date(date + 'T12:00:00Z').getUTCDay())) return fail(res, 400, 'CLOSED_DAY');
+    // le jour même : pas de créneau déjà passé (ou dans moins de 30 min)
+    if (date === today && time <= algiersTimePlus(30)) return fail(res, 400, 'TIME_PAST');
 
     if (!/^[A-Za-z0-9][A-Za-z0-9 \-/_.]{3,39}$/.test(transaction)) return fail(res, 400, 'TRANSACTION');
 
@@ -137,16 +156,16 @@ exports.createPublicBooking = async (req, res) => {
             `INSERT INTO online_bookings
              (reference, full_name, phone, vehicle, vin, plate, service_id, service_label,
               base_price, discount_percent, discount_source, discount_label, amount_due,
-              appointment_date, transaction_ref, message, lang, client_ip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              appointment_date, transaction_ref, message, lang, client_ip, promo_code, payment_method)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [reference, name, phone, vehicle, vin, plate, serviceId, q.service.label_fr,
              q.base_price, q.discount_percent, q.discount_source, q.discount_label, q.amount,
-             `${date} ${time}:00`, transaction, message, lang, req.ip || null]
+             `${date} ${time}:00`, transaction, message, lang, req.ip || null, q.promo_code, paymentMethod]
           );
           bookingId = r.insertId;
         } catch (e) {
           if (e.code !== 'ER_DUP_ENTRY') throw e;
-          if (/transaction/i.test(e.message)) { await conn.rollback(); return fail(res, 409, 'TRANSACTION_USED'); }
+          if (/uq_online_bookings_tx|transaction/i.test(e.message)) { await conn.rollback(); return fail(res, 409, 'TRANSACTION_USED'); }
           // sinon : collision de référence → on réessaie
         }
       }
@@ -188,7 +207,7 @@ exports.listBookings = async (req, res) => {
     }
     const sql = () => `SELECT ob.id, ob.reference, ob.full_name, ob.phone, ob.vehicle, ob.vin, ob.plate,
               ob.service_id, ob.service_label, ob.base_price, ob.discount_percent, ob.discount_source,
-              ob.discount_label, ob.amount_due, ob.appointment_date, ob.transaction_ref,
+              ob.discount_label, ob.amount_due, ob.appointment_date, ob.transaction_ref, ob.payment_method,
               ob.message, ob.lang, ob.status, ob.reject_reason, ob.reviewed_at,
               ob.appointment_id, ob.created_at,${notifyCols === false ? '' : ' ob.notify_status, ob.notify_error, ob.notified_at,'}
               DATE_FORMAT(a.appointment_date, '%Y-%m-%d %H:%i:%s') AS final_date,
@@ -258,28 +277,23 @@ async function findOrCreateClient(conn, fullName, phone) {
 }
 
 async function findOrCreateVehicle(conn, clientId, vehicleText, vin, plate) {
-  const cleanV = vin ? String(vin).trim() : '';
-  const cleanPlate = plate ? String(plate).trim() : '';
-  if (!cleanV && !cleanPlate) return null;
-  try {
-    if (cleanV) {
-      const [byVin] = await conn.query('SELECT id FROM vehicules WHERE vin_number = ? LIMIT 1', [cleanV]);
-      if (byVin.length) return byVin[0].id;
-    }
-    if (cleanPlate) {
-      const [byPlate] = await conn.query('SELECT id FROM vehicules WHERE license_plate = ? LIMIT 1', [cleanPlate]);
-      if (byPlate.length) return byPlate[0].id;
-    }
-    const [make, ...rest] = String(vehicleText || '').trim().split(/\s+/);
-    const [created] = await conn.query(
-      'INSERT INTO vehicules (client_id, make, model, license_plate, vin_number) VALUES (?, ?, ?, ?, ?)',
-      [clientId, make || 'Inconnu', rest.join(' ') || 'Inconnu', cleanPlate || null, cleanV || null]
-    );
-    return created.insertId;
-  } catch (err) {
-    console.warn('⚠️ Véhicule non créé pour la réservation en ligne:', err.message);
-    return null;
+  const cleanV = vin ? String(vin).trim().slice(0, 50) : '';
+  const cleanPlate = plate ? String(plate).trim().slice(0, 30) : '';
+  if (cleanV) {
+    const [byVin] = await conn.query('SELECT id FROM vehicules WHERE vin_number = ? LIMIT 1', [cleanV]);
+    if (byVin.length) return byVin[0].id;
   }
+  if (cleanPlate) {
+    const [byPlate] = await conn.query('SELECT id FROM vehicules WHERE license_plate = ? LIMIT 1', [cleanPlate]);
+    if (byPlate.length) return byPlate[0].id;
+  }
+  // appointments.vehicle_id est obligatoire : on crée toujours le véhicule (immatriculation vide si non fournie)
+  const [make, ...rest] = String(vehicleText || '').trim().split(/\s+/);
+  const [created] = await conn.query(
+    'INSERT INTO vehicules (client_id, make, model, license_plate, vin_number) VALUES (?, ?, ?, ?, ?)',
+    [clientId, (make || 'Inconnu').slice(0, 50), (rest.join(' ') || 'Inconnu').slice(0, 50), cleanPlate, cleanV || null]
+  );
+  return created.insertId;
 }
 
 // PUT /api/admin/online-bookings/:id/accept   body: { totalAmount?, versement?, appointmentDate? }
@@ -318,8 +332,9 @@ exports.acceptBooking = async (req, res) => {
     const notes = [
       `Réservation en ligne ${bk.reference}`,
       `Véhicule : ${bk.vehicle}${bk.plate ? ' (' + bk.plate + ')' : ''}`,
-      `Transaction BaridiMob : ${bk.transaction_ref}`,
-      bk.discount_percent > 0 ? `Remise ${Number(bk.discount_percent)} % (${bk.discount_source === 'LOYALTY' ? 'client fidèle' : (bk.discount_label || 'promotion')}) — prix de base ${bk.base_price} DA` : '',
+      `Paiement ${bk.payment_method === 'CCP' ? 'CCP (versement)' : 'BaridiMob'} — transaction : ${bk.transaction_ref}`,
+      bk.discount_percent > 0 ? `Remise ${Number(bk.discount_percent)} % (${bk.discount_source === 'LOYALTY' ? 'client fidèle' : bk.discount_source === 'CODE' ? 'code promo ' + (bk.promo_code || bk.discount_label || '') : (bk.discount_label || 'promotion')}) — prix de base ${bk.base_price} DA` : '',
+      bk.promo_code && bk.discount_source !== 'CODE' ? `Code promo saisi : ${bk.promo_code} (remise plus grande déjà appliquée)` : '',
       bk.message ? `Remarque client : ${bk.message}` : ''
     ].filter(Boolean).join(' | ');
 
@@ -345,7 +360,7 @@ exports.acceptBooking = async (req, res) => {
     }
 
     await conn.query(
-      `UPDATE online_bookings SET status = 'ACCEPTED', appointment_id = ?, reviewed_by = ?, reviewed_at = NOW() WHERE id = ?`,
+      `UPDATE online_bookings SET status = 'ACCEPTED', appointment_id = ?, reviewed_by = ?, reviewed_at = CONVERT_TZ(NOW(), '+00:00', '+01:00') WHERE id = ?`,
       [result.insertId, req.user?.id || null, id]
     );
     await conn.commit();
@@ -369,7 +384,7 @@ exports.rejectBooking = async (req, res) => {
     const reason = str(req.body?.reason, 255);
     if (reason.length < 3) return res.status(400).json({ message: 'Veuillez indiquer le motif du refus.' });
     const [r] = await db.query(
-      `UPDATE online_bookings SET status = 'REJECTED', reject_reason = ?, reviewed_by = ?, reviewed_at = NOW()
+      `UPDATE online_bookings SET status = 'REJECTED', reject_reason = ?, reviewed_by = ?, reviewed_at = CONVERT_TZ(NOW(), '+00:00', '+01:00')
        WHERE id = ? AND status = 'PENDING_REVIEW'`,
       [reason, req.user?.id || null, id]
     );

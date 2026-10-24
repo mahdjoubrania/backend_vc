@@ -1,7 +1,11 @@
 const mysql = require('mysql2/promise');
 const path = require('path');
 
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+// config/.env = ancien fichier local (Railway). Jamais lu en production : sur le VPS seul backend/.env compte
+// (sinon une variable absente pourrait silencieusement pointer vers l'ancienne base Railway).
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config({ path: path.join(__dirname, '.env') });
+}
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST,

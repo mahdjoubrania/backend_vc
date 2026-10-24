@@ -3,14 +3,52 @@ const router = express.Router();
 const { GoogleGenAI } = require('@google/genai');
 const db = require('../config/db');
 const verifyToken = require('../middleware/auth.middleware');
+const { requireModuleAccess } = require('../middleware/auth.middleware');
+const rateLimit = require('../middleware/rate-limit');
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Client Gemini créé seulement si une clé est configurée (sinon : résumé de secours, sans appel externe)
+let ai = null;
+function getAI() {
+  if (!process.env.GEMINI_API_KEY) return null;
+  if (!ai) ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  return ai;
+}
+
+// Limite de coût : un résumé est mis en cache après la 1re génération ; 40 demandes/heure/utilisateur suffisent largement
+const aiLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 40,
+  keyGenerator: (req) => 'u' + (req.user && req.user.id),
+  message: { success: false, message: 'Trop de demandes de résumé. Réessayez plus tard.' }
+});
+
+// Données du rapport lues en base (jamais depuis le navigateur : le résumé officiel ne peut pas être falsifié)
+async function loadReportData(inspectionId) {
+  const [insp] = await db.query('SELECT id FROM inspections WHERE id = ? LIMIT 1', [inspectionId]);
+  if (!insp.length) return null;
+  const one = async (sql) => { try { const [r] = await db.query(sql, [inspectionId]); return r[0] || {}; } catch (_) { return {}; } };
+  const [tole, susp, mot, scan] = await Promise.all([
+    one(`SELECT longerons_status, longerons_obs, traverses_status, traverses_obs, passage_roues_status, passage_roues_obs,
+                fond_coffre_status, fond_coffre_obs, chassis_status, chassis_obs, optique_status, optique_obs,
+                vitre_status, vitre_obs, conclusion_structure FROM inspection_tole WHERE inspection_id = ? LIMIT 1`),
+    one(`SELECT usure_pneu_avg, usure_pneu_avd, usure_pneu_arg, usure_pneu_ard, jante_avg, jante_avd, jante_arg, jante_ard,
+                corrosion_soubassement, traces_choc FROM inspection_suspension WHERE inspection_id = ? LIMIT 1`),
+    one(`SELECT niveau_huile, fuite_huile, fuite_liquide_refroidissement, bruit_moteur, fumee_echappement
+           FROM inspection_moteur WHERE inspection_id = ? LIMIT 1`),
+    one(`SELECT calculateur_status, voyants_allumes, dtc_codes FROM inspection_scanner WHERE inspection_id = ? LIMIT 1`)
+  ]);
+  const data = { ...tole, ...susp, ...mot, ...scan };
+  ['corrosion_soubassement', 'traces_choc', 'fuite_huile', 'fuite_liquide_refroidissement', 'bruit_moteur'].forEach((k) => { data[k] = Number(data[k]) === 1; });
+  if (data.dtc_codes) data.dtc_codes = String(data.dtc_codes).slice(0, 2000);
+  if (data.voyants_allumes) data.voyants_allumes = String(data.voyants_allumes).slice(0, 255);
+  return data;
+}
 
 // دالة مساعدة لمعالجة الضغط العالي وإعادة المحاولة تلقائياً (Exponential Backoff)
 async function generateContentWithRetry(promptConfig, maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
     try {
-      return await ai.models.generateContent({
+      return await getAI().models.generateContent({
         model: 'gemini-2.5-flash',
         ...promptConfig
       });
@@ -29,12 +67,12 @@ async function generateContentWithRetry(promptConfig, maxRetries = 3) {
   }
 }
 
-router.post('/generate-summary', verifyToken, async (req, res) => {
+router.post('/generate-summary', verifyToken, requireModuleAccess('reports'), aiLimiter, async (req, res) => {
     try {
-        const data = req.body;
-        const inspectionId = data.inspection_id || data.id;
+        const body = req.body || {};
+        const inspectionId = Number(body.inspection_id || body.id);
 
-        if (!inspectionId) {
+        if (!Number.isInteger(inspectionId) || inspectionId <= 0) {
             return res.status(400).json({ success: false, message: "ID d'inspection manquant" });
         }
 
@@ -52,6 +90,9 @@ router.post('/generate-summary', verifyToken, async (req, res) => {
                 data: existing[0]
             });
         }
+
+        const data = await loadReportData(inspectionId);
+        if (!data) return res.status(404).json({ success: false, message: 'Inspection introuvable.' });
 
         // 2. إعداد الـ Prompt للذكاء الاصطناعي
         const promptText = `
@@ -78,6 +119,7 @@ Champs à générer :
         let resultJson;
 
         try {
+            if (!getAI()) throw new Error('GEMINI_API_KEY non configurée');
             // 3. الطلب مع آلية Retry وتطبيق responseSchema
             const response = await generateContentWithRetry({
                 contents: promptText,
@@ -146,8 +188,7 @@ Champs à générer :
         console.error("Erreur AI Server:", error);
         res.status(500).json({ 
             success: false, 
-            message: "Erreur serveur lors de la génération du résumé.",
-            error: error.message 
+            message: "Erreur serveur lors de la génération du résumé."
         });
     }
 });

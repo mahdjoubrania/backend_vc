@@ -198,10 +198,8 @@ exports.saveKilometrage = async (req, res) => {
       });
     }
 
-    inspection_id = await ensureInspectionExists(
-      inspection_id,
-      req.user.id
-    );
+    checkLengths('kilometrage', req.body);
+    inspection_id = await ensureInspectionExists(inspection_id, req.user);
 
     const sql = `
       INSERT INTO inspection_kilometrage
@@ -228,12 +226,7 @@ exports.saveKilometrage = async (req, res) => {
     });
 
   } catch (err) {
-    console.error('❌ saveKilometrage:', err);
-
-    res.status(500).json({
-      success: false,
-      error: 'Erreur serveur. Veuillez réessayer plus tard.'
-    });
+    sendSaveError(res, 'saveKilometrage', err);
   }
 };
 
@@ -253,7 +246,8 @@ exports.saveMoteur = async (req, res) => {
       return res.status(401).json({ success: false, error: 'Utilisateur non authentifié' });
     }
 
-    const realInspectionId = await ensureInspectionExists(inspection_id, req.user.id);
+    checkLengths('moteur', req.body);
+    const realInspectionId = await ensureInspectionExists(inspection_id, req.user);
 
     const sql = `
       INSERT INTO inspection_moteur
@@ -282,8 +276,7 @@ exports.saveMoteur = async (req, res) => {
 
     res.json({ success: true, message: 'تم حفظ بيانات المحرك بنجاح' });
   } catch (err) {
-    console.error('❌ saveMoteur:', err);
-    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
+    sendSaveError(res, 'saveMoteur', err);
   }
 };
 
@@ -304,10 +297,8 @@ exports.saveScanner = async (req, res) => {
       });
     }
 
-    const realInspectionId = await ensureInspectionExists(
-      inspection_id,
-      req.user.id
-    );
+    checkLengths('scanner', req.body);
+    const realInspectionId = await ensureInspectionExists(inspection_id, req.user);
 
     const sql = `
       INSERT INTO inspection_scanner
@@ -343,12 +334,7 @@ exports.saveScanner = async (req, res) => {
     });
 
   } catch (err) {
-    console.error('❌ saveScanner:', err);
-
-    res.status(500).json({
-      success: false,
-      error: 'Erreur serveur. Veuillez réessayer plus tard.'
-    });
+    sendSaveError(res, 'saveScanner', err);
   }
 };
 
@@ -372,9 +358,8 @@ exports.saveSuspension = async (req, res) => {
       return res.status(401).json({ success: false, error: 'Utilisateur non authentifié' });
     }
 
-    const realInspectionId = await ensureInspectionExists(inspection_id, req.user.id);
-
-    await db.query('DELETE FROM inspection_suspension WHERE inspection_id = ?', [realInspectionId]);
+    checkLengths('suspension', req.body);
+    const realInspectionId = await ensureInspectionExists(inspection_id, req.user);
 
     const query = `
       INSERT INTO inspection_suspension (
@@ -391,7 +376,7 @@ exports.saveSuspension = async (req, res) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
-    await db.query(query, [
+    await replaceModuleRow('inspection_suspension', realInspectionId, query, [
       realInspectionId, req.user.id,
       usure_pneu_avg || 'Conforme', obs_pneu_avg || null,
       usure_pneu_avd || 'Conforme', obs_pneu_avd || null,
@@ -406,8 +391,7 @@ exports.saveSuspension = async (req, res) => {
 
     res.json({ success: true, message: 'Données de suspension enregistrées avec succès' });
   } catch (err) {
-    console.error('❌ saveSuspension:', err);
-    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
+    sendSaveError(res, 'saveSuspension', err);
   }
 };
 
@@ -430,9 +414,8 @@ exports.saveTole = async (req, res) => {
       return res.status(401).json({ success: false, error: 'Utilisateur non authentifié' });
     }
 
-    const realInspectionId = await ensureInspectionExists(inspection_id, req.user.id);
-
-    await db.query('DELETE FROM inspection_tole WHERE inspection_id = ?', [realInspectionId]);
+    checkLengths('tole', req.body);
+    const realInspectionId = await ensureInspectionExists(inspection_id, req.user);
 
     const query = `
       INSERT INTO inspection_tole (
@@ -448,7 +431,7 @@ exports.saveTole = async (req, res) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
-    await db.query(query, [
+    await replaceModuleRow('inspection_tole', realInspectionId, query, [
       realInspectionId,
       req.user.id,
       JSON.stringify(elements_ext_json || {}),
@@ -465,8 +448,7 @@ exports.saveTole = async (req, res) => {
 
     res.json({ success: true, message: 'Données de carrosserie enregistrées avec succès' });
   } catch (err) {
-    console.error('❌ saveTole:', err);
-    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
+    sendSaveError(res, 'saveTole', err);
   }
 };
 
@@ -499,32 +481,86 @@ exports.getAllInspections = async (req, res) => {
   }
 };
 
-async function ensureInspectionExists(inspectionId, userId) {
-  if (!inspectionId) throw new Error('inspection_id manquant');
-  if (!userId) throw new Error('user_id manquant');
+// يستقبل دائماً رقم الموعد (appointment_id) من واجهة التقني — ولا يقبل رقم الفحص أبداً
+// (كان الخلط بين الرقمين يفتح/يكتب تقرير زبون آخر عندما يتطابق رقم فحص مع رقم موعد قديم)
+async function ensureInspectionExists(appointmentId, user) {
+  const apptId = Number(appointmentId);
+  if (!Number.isInteger(apptId) || apptId <= 0) throw new HttpError(400, 'Rendez-vous invalide.');
+  if (!user || !user.id) throw new HttpError(401, 'Utilisateur non authentifié');
 
-  // 1. هل ID المطروح ينتمي لجدول inspections؟
   const [existing] = await db.query(
-    'SELECT id FROM inspections WHERE id = ?',
-    [inspectionId]
+    'SELECT id, status FROM inspections WHERE appointment_id = ? LIMIT 1',
+    [apptId]
   );
-  if (existing.length > 0) return existing[0].id;
+  if (existing.length > 0) {
+    // تقرير منتهٍ (ومطبوع برمز QR): لا يعدّله إلا الأدمن من شاشة التعديل المسجَّلة
+    if (String(existing[0].status || '').toUpperCase() === 'COMPLETED' && String(user.role || '').toUpperCase() !== 'ADMIN') {
+      throw new HttpError(409, 'Ce contrôle est terminé : le rapport ne peut plus être modifié (seul l\'administrateur peut le corriger).');
+    }
+    // الملخص الآلي المخزَّن لم يعد مطابقاً للبيانات الجديدة
+    await db.query('DELETE FROM inspection_ai_summaries WHERE inspection_id = ?', [existing[0].id]).catch(() => {});
+    return existing[0].id;
+  }
 
-  // 2. هل هو appointment_id؟
-  const [byAppt] = await db.query(
-    'SELECT id FROM inspections WHERE appointment_id = ?',
-    [inspectionId]
-  );
-  if (byAppt.length > 0) return byAppt[0].id;
+  const [appt] = await db.query('SELECT id, status FROM appointments WHERE id = ? LIMIT 1', [apptId]);
+  if (appt.length === 0) throw new HttpError(404, 'Rendez-vous introuvable.');
+  if (['CANCELLED', 'ABSENT'].includes(String(appt[0].status || '').toUpperCase())) {
+    throw new HttpError(409, 'Ce rendez-vous est annulé.');
+  }
 
-  // 3. إنشاء السجل باستخدام العمود الصحيح user_id الموجود في Railway
-  const [result] = await db.query(
-    `INSERT INTO inspections (appointment_id, user_id, created_at)
-     VALUES (?, ?, NOW())`,
-    [inspectionId, userId]
-  );
+  try {
+    const [result] = await db.query(
+      `INSERT INTO inspections (appointment_id, user_id, created_at)
+       VALUES (?, ?, CONVERT_TZ(NOW(), '+00:00', '+01:00'))`,
+      [apptId, user.id]
+    );
+    return result.insertId;
+  } catch (e) {
+    // حفظ وحدتين بنفس اللحظة: الثاني يجد السجل الذي أنشأه الأول
+    const [again] = await db.query('SELECT id FROM inspections WHERE appointment_id = ? LIMIT 1', [apptId]);
+    if (again.length > 0) return again[0].id;
+    throw e;
+  }
+}
 
-  return result.insertId;
+// تحقق مسبق من أطوال النصوص (قبل أي كتابة بالقاعدة)
+function checkLengths(sectionKey, body) {
+  const fields = (SPECS[sectionKey] || {}).fields || {};
+  for (const [name, spec] of Object.entries(fields)) {
+    if (spec.type !== 'string') continue;
+    const v = body ? body[name] : undefined;
+    if (v !== undefined && v !== null && String(v).length > spec.max) {
+      throw new HttpError(400, `Texte trop long (${name} : ${spec.max} caractères maximum).`);
+    }
+  }
+}
+
+// ترجمة أخطاء الحفظ إلى رسائل مفهومة بدل خطأ 500 عام
+function sendSaveError(res, tag, err) {
+  if (err instanceof HttpError) return res.status(err.status).json({ success: false, error: err.message });
+  const code = err && err.code;
+  if (code === 'ER_DATA_TOO_LONG') return res.status(400).json({ success: false, error: 'Un texte saisi est trop long (255 caractères maximum pour les observations).' });
+  if (['ER_TRUNCATED_WRONG_VALUE', 'ER_TRUNCATED_WRONG_VALUE_FOR_FIELD', 'WARN_DATA_TRUNCATED', 'ER_BAD_NULL_ERROR', 'ER_WARN_DATA_OUT_OF_RANGE'].includes(code)) {
+    return res.status(400).json({ success: false, error: 'Une valeur saisie est invalide. Vérifiez le formulaire.' });
+  }
+  console.error(`❌ ${tag}:`, err);
+  return res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
+}
+
+// استبدال سجل وحدة كاملة داخل معاملة واحدة: إما ينجح الحذف والإدخال معاً أو لا يتغير شيء
+async function replaceModuleRow(table, inspectionId, insertSql, params) {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.query(`DELETE FROM \`${table}\` WHERE inspection_id = ?`, [inspectionId]);
+    await conn.query(insertSql, params);
+    await conn.commit();
+  } catch (e) {
+    try { await conn.rollback(); } catch (_) { /* ignore */ }
+    throw e;
+  } finally {
+    conn.release();
+  }
 }
 
 exports.saveGeneral = async (req, res) => {
@@ -540,7 +576,8 @@ exports.saveGeneral = async (req, res) => {
       return res.status(401).json({ success: false, error: 'Utilisateur non authentifié' });
     }
 
-    const realInspectionId = await ensureInspectionExists(inspection_id, req.user.id);
+    checkLengths('general', req.body);
+    const realInspectionId = await ensureInspectionExists(inspection_id, req.user);
 
     const sql = `
       INSERT INTO inspection_general_observations
@@ -567,8 +604,7 @@ exports.saveGeneral = async (req, res) => {
     });
 
   } catch (err) {
-    console.error('❌ saveGeneral:', err);
-    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
+    sendSaveError(res, 'saveGeneral', err);
   }
 };
 
@@ -584,8 +620,9 @@ exports.getInspectionDetails = async (req, res) => {
        LEFT JOIN appointments a ON i.appointment_id = a.id
        LEFT JOIN clients c ON a.client_id = c.id
        LEFT JOIN vehicules v ON a.vehicle_id = v.id
-       WHERE i.id = ? OR i.appointment_id = ?`,
-      [inspection_id, inspection_id]
+       WHERE i.appointment_id = ?
+       LIMIT 1`,
+      [inspection_id]
     );
 
     if (!inspections || inspections.length === 0) {
@@ -631,149 +668,148 @@ exports.getInspectionDetails = async (req, res) => {
   }
 };
 
+// Données complètes d'un rapport (utilisé par l'équipe et par le téléchargement client sécurisé)
+async function buildToleReport(inspectionId) {
+  const query = `
+    SELECT 
+      i.id, 
+      i.created_at,
+      c.full_name AS client_name, 
+      c.phone AS client_phone,
+      v.make AS brand, 
+      v.model, 
+      v.license_plate AS plate, 
+      v.vin_number,
+      km.kilometrage_affiche,
+      km.conformite AS km_conformite,
+      km.notes AS km_notes,
+      mot.niveau_huile, 
+      mot.fuite_huile, 
+      mot.fuite_liquide_refroidissement, 
+      mot.bruit_moteur, 
+      mot.fumee_echappement, 
+      mot.notes AS moteur_notes,
+      gen.nombre_cles,
+      gen.rapport_mecanique,
+      gen.equipements_secour,
+      susp.usure_pneu_avg, susp.obs_pneu_avg,
+      susp.usure_pneu_avd, susp.obs_pneu_avd,
+      susp.usure_pneu_arg, susp.obs_pneu_arg,
+      susp.usure_pneu_ard, susp.obs_pneu_ard,
+      susp.jante_avg, susp.jante_avg_obs,
+      susp.jante_avd, susp.jante_avd_obs,
+      susp.jante_arg, susp.jante_arg_obs,
+      susp.jante_ard, susp.jante_ard_obs,
+      susp.corrosion_soubassement, susp.traces_choc,
+      susp.notes AS suspension_notes,
+      t.elements_ext_json,
+      t.longerons_status, t.longerons_obs,
+      t.traverses_status, t.traverses_obs,
+      t.passage_roues_status, t.passage_roues_obs,
+      t.fond_coffre_status, t.fond_coffre_obs,
+      t.chassis_status, t.chassis_obs,
+      t.optique_status, t.optique_obs,
+      t.vitre_status, t.vitre_obs,
+      t.conclusion_structure,
+      t.notes AS tole_notes
+    FROM inspections i
+    LEFT JOIN appointments a ON i.appointment_id = a.id
+    LEFT JOIN clients c ON a.client_id = c.id
+    LEFT JOIN vehicules v ON a.vehicle_id = v.id
+    LEFT JOIN inspection_kilometrage km ON i.id = km.inspection_id
+    LEFT JOIN inspection_moteur mot ON i.id = mot.inspection_id
+    LEFT JOIN inspection_general_observations gen ON i.id = gen.inspection_id
+    LEFT JOIN inspection_suspension susp ON i.id = susp.inspection_id
+    LEFT JOIN inspection_tole t ON i.id = t.inspection_id
+    WHERE i.id = ?
+    LIMIT 1
+  `;
+
+  const [rows] = await db.query(query, [inspectionId]);
+
+  if (!rows || rows.length === 0) return null;
+
+  const reportData = rows[0];
+
+  let scannerData = { dtc_codes: null, calculateur_status: 'OK', voyants_allumes: null, scanner_notes: null };
+  try {
+    const [scRows] = await db.query(
+      'SELECT dtc_codes, calculateur_status, voyants_allumes, notes AS scanner_notes FROM inspection_scanner WHERE inspection_id = ?',
+      [reportData.id]
+    );
+    if (scRows.length > 0) {
+      scannerData = scRows[0];
+    }
+  } catch (scErr) {
+    console.warn('⚠️ Table inspection_scanner non prête:', scErr.message);
+  }
+
+  let finalReport = {
+    ...reportData,
+    ...scannerData,
+    niveau_huile: reportData.niveau_huile || 'Non contrôlé'
+  };
+
+  // أسماء منفّذي الوحدات: معلومة إضافية فقط. أي فشل بها (مثلاً عمود technician_id غير منشأ بعد)
+  // لا يجوز أن يمنع عرض التقرير، لذلك تُجلب باستعلامات منفصلة داخل try/catch
+  const technicianSources = [
+    ['scanner', 'inspection_scanner'],
+    ['moteur', 'inspection_moteur'],
+    ['suspension', 'inspection_suspension'],
+    ['tole', 'inspection_tole'],
+    ['kilometrage', 'inspection_kilometrage'],
+    ['general', 'inspection_general_observations']
+  ];
+  const resetTechnicians = () => technicianSources.forEach(([key]) => {
+    finalReport[`${key}_technician_id`] = null;
+    finalReport[`${key}_technician_name`] = null;
+  });
+  resetTechnicians();
+
+  try {
+    const ids = new Set();
+    for (const [key, table] of technicianSources) {
+      const [techRows] = await db.query(
+        `SELECT technician_id FROM \`${table}\` WHERE inspection_id = ? LIMIT 1`,
+        [reportData.id]
+      );
+      const tid = techRows.length ? techRows[0].technician_id : null;
+      finalReport[`${key}_technician_id`] = tid || null;
+      if (tid) ids.add(tid);
+    }
+    if (ids.size > 0) {
+      const idList = [...ids];
+      const [users] = await db.query(
+        `SELECT id, full_name FROM users WHERE id IN (${idList.map(() => '?').join(',')})`,
+        idList
+      );
+      const nameById = {};
+      users.forEach((u) => { nameById[u.id] = u.full_name; });
+      technicianSources.forEach(([key]) => {
+        const tid = finalReport[`${key}_technician_id`];
+        finalReport[`${key}_technician_name`] = tid ? (nameById[tid] || null) : null;
+      });
+    }
+  } catch (techErr) {
+    console.warn('⚠️ Noms des techniciens ignorés (le rapport reste affiché):', techErr.message);
+    resetTechnicians();
+  }
+
+  return finalReport;
+}
+exports.buildToleReport = buildToleReport;
+
 exports.getToleReportById = async (req, res) => {
   const { id } = req.params;
 
   try {
-    // الخطوة 1: تحديد الفحص باستعلام صغير بلا فرز. نفضّل مطابقة رقم الفحص، ونرجع لرقم الموعد فقط إن لم يوجد فحص بهذا الرقم.
-    // (لا نستخدم ORDER BY هنا إطلاقاً: الاستعلام الرئيسي أدناه يجلب صور الرسم الضخمة (elements_ext_json)،
-    //  وأي فرز عليه يستنفد ذاكرة الفرز بالسيرفر: ER_OUT_OF_SORTMEMORY)
-    let [idRows] = await db.query('SELECT id FROM inspections WHERE id = ? LIMIT 1', [id]);
-    if (!idRows || idRows.length === 0) {
-      [idRows] = await db.query('SELECT id FROM inspections WHERE appointment_id = ? LIMIT 1', [id]);
-    }
+    // رقم التقرير = رقم الفحص فقط (لا رجوع لرقم الموعد: كان يعرض تقرير زبون آخر)
+    const [idRows] = await db.query('SELECT id FROM inspections WHERE id = ? LIMIT 1', [Number(id) || 0]);
     if (!idRows || idRows.length === 0) {
       return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
     }
-    const inspectionId = idRows[0].id;
-
-    const query = `
-      SELECT 
-        i.id, 
-        i.created_at,
-        c.full_name AS client_name, 
-        c.phone AS client_phone,
-        v.make AS brand, 
-        v.model, 
-        v.license_plate AS plate, 
-        v.vin_number,
-        km.kilometrage_affiche,
-        km.conformite AS km_conformite,
-        km.notes AS km_notes,
-        mot.niveau_huile, 
-        mot.fuite_huile, 
-        mot.fuite_liquide_refroidissement, 
-        mot.bruit_moteur, 
-        mot.fumee_echappement, 
-        mot.notes AS moteur_notes,
-        gen.nombre_cles,
-        gen.rapport_mecanique,
-        gen.equipements_secour,
-        susp.usure_pneu_avg, susp.obs_pneu_avg,
-        susp.usure_pneu_avd, susp.obs_pneu_avd,
-        susp.usure_pneu_arg, susp.obs_pneu_arg,
-        susp.usure_pneu_ard, susp.obs_pneu_ard,
-        susp.jante_avg, susp.jante_avg_obs,
-        susp.jante_avd, susp.jante_avd_obs,
-        susp.jante_arg, susp.jante_arg_obs,
-        susp.jante_ard, susp.jante_ard_obs,
-        susp.corrosion_soubassement, susp.traces_choc,
-        susp.notes AS suspension_notes,
-        t.elements_ext_json,
-        t.longerons_status, t.longerons_obs,
-        t.traverses_status, t.traverses_obs,
-        t.passage_roues_status, t.passage_roues_obs,
-        t.fond_coffre_status, t.fond_coffre_obs,
-        t.chassis_status, t.chassis_obs,
-        t.optique_status, t.optique_obs,
-        t.vitre_status, t.vitre_obs,
-        t.conclusion_structure,
-        t.notes AS tole_notes
-      FROM inspections i
-      LEFT JOIN appointments a ON i.appointment_id = a.id
-      LEFT JOIN clients c ON a.client_id = c.id
-      LEFT JOIN vehicules v ON a.vehicle_id = v.id
-      LEFT JOIN inspection_kilometrage km ON i.id = km.inspection_id
-      LEFT JOIN inspection_moteur mot ON i.id = mot.inspection_id
-      LEFT JOIN inspection_general_observations gen ON i.id = gen.inspection_id
-      LEFT JOIN inspection_suspension susp ON i.id = susp.inspection_id
-      LEFT JOIN inspection_tole t ON i.id = t.inspection_id
-      WHERE i.id = ?
-      LIMIT 1
-    `;
-
-    const [rows] = await db.query(query, [inspectionId]);
-
-    if (!rows || rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
-    }
-
-    const reportData = rows[0];
-
-    let scannerData = { dtc_codes: null, calculateur_status: 'OK', voyants_allumes: null, scanner_notes: null };
-    try {
-      const [scRows] = await db.query(
-        'SELECT dtc_codes, calculateur_status, voyants_allumes, notes AS scanner_notes FROM inspection_scanner WHERE inspection_id = ?',
-        [reportData.id]
-      );
-      if (scRows.length > 0) {
-        scannerData = scRows[0];
-      }
-    } catch (scErr) {
-      console.warn('⚠️ Table inspection_scanner non prête:', scErr.message);
-    }
-
-    let finalReport = {
-      ...reportData,
-      ...scannerData,
-      niveau_huile: reportData.niveau_huile || 'Non contrôlé'
-    };
-
-    // أسماء منفّذي الوحدات: معلومة إضافية فقط. أي فشل بها (مثلاً عمود technician_id غير منشأ بعد)
-    // لا يجوز أن يمنع عرض التقرير، لذلك تُجلب باستعلامات منفصلة داخل try/catch
-    const technicianSources = [
-      ['scanner', 'inspection_scanner'],
-      ['moteur', 'inspection_moteur'],
-      ['suspension', 'inspection_suspension'],
-      ['tole', 'inspection_tole'],
-      ['kilometrage', 'inspection_kilometrage'],
-      ['general', 'inspection_general_observations']
-    ];
-    const resetTechnicians = () => technicianSources.forEach(([key]) => {
-      finalReport[`${key}_technician_id`] = null;
-      finalReport[`${key}_technician_name`] = null;
-    });
-    resetTechnicians();
-
-    try {
-      const ids = new Set();
-      for (const [key, table] of technicianSources) {
-        const [techRows] = await db.query(
-          `SELECT technician_id FROM \`${table}\` WHERE inspection_id = ? LIMIT 1`,
-          [reportData.id]
-        );
-        const tid = techRows.length ? techRows[0].technician_id : null;
-        finalReport[`${key}_technician_id`] = tid || null;
-        if (tid) ids.add(tid);
-      }
-      if (ids.size > 0) {
-        const idList = [...ids];
-        const [users] = await db.query(
-          `SELECT id, full_name FROM users WHERE id IN (${idList.map(() => '?').join(',')})`,
-          idList
-        );
-        const nameById = {};
-        users.forEach((u) => { nameById[u.id] = u.full_name; });
-        technicianSources.forEach(([key]) => {
-          const tid = finalReport[`${key}_technician_id`];
-          finalReport[`${key}_technician_name`] = tid ? (nameById[tid] || null) : null;
-        });
-      }
-    } catch (techErr) {
-      console.warn('⚠️ Noms des techniciens ignorés (le rapport reste affiché):', techErr.message);
-      resetTechnicians();
-    }
-
+    const finalReport = await buildToleReport(idRows[0].id);
+    if (!finalReport) return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
     res.json({ success: true, data: finalReport });
 
   } catch (err) {
@@ -798,8 +834,8 @@ exports.getToleReport = async (req, res) => {
         a.color
       FROM inspections i
       LEFT JOIN appointments a ON i.appointment_id = a.id
-      WHERE i.id = ? OR i.appointment_id = ?
-    `, [id, id]);
+      WHERE i.id = ?
+    `, [id]);
 
     if (!inspections || inspections.length === 0) {
       return res.status(404).json({ success: false, message: 'Rapport non trouvé' });
@@ -856,10 +892,10 @@ exports.completeInspection = async (req, res) => {
       return res.status(401).json({ success: false, error: 'Utilisateur non authentifié' });
     }
 
-    // البحث عن الفحص سواء كان المعرّف inspection_id أو appointment_id
+    // واجهة التقني ترسل رقم الموعد دائماً
     const [rows] = await db.query(
-      'SELECT id, appointment_id FROM inspections WHERE id = ? OR appointment_id = ?',
-      [inspection_id, inspection_id]
+      'SELECT id, appointment_id FROM inspections WHERE appointment_id = ? LIMIT 1',
+      [Number(inspection_id) || 0]
     );
 
     if (rows.length === 0) {

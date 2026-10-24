@@ -22,7 +22,7 @@ router.put('/complete/:inspection_id', technicianOnly, inspectionCtrl.completeIn
 router.get('/all', requireModuleAccess('reports'), inspectionCtrl.getAllInspections);
 router.get('/tole/:id', requireModuleAccess('reports'), inspectionCtrl.getToleReportById);
 router.get('/tole-report/:id', requireModuleAccess('reports'), inspectionCtrl.getToleReportById);
-router.get('/details/:inspection_id', inspectionCtrl.getInspectionDetails);
+router.get('/details/:inspection_id', technicianOnly, inspectionCtrl.getInspectionDetails);   // id = n° de rendez-vous (écran technicien)
 
 // Code de vérification (QR) imprimé sur la page de garde du rapport
 const reportVerify = require('../verification/report-verify');

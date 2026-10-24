@@ -13,6 +13,7 @@ router.get('/dashboard-summary', requireRole('ADMIN'), adminController.getDashbo
 
 // --- Rendez-vous (Appointments) : ADMIN + RECEPTION ---
 router.get('/appointments', requireRole('ADMIN', 'RECEPTION'), adminController.getAppointments);
+router.get('/appointments/outstanding', requireRole('ADMIN', 'RECEPTION'), adminController.getOutstanding);
 router.get('/appointments/today', requireRole('ADMIN', 'RECEPTION', 'TECHNICIAN', 'TECHNICIEN'), adminController.getTodayAppointments);
 router.post('/appointments', requireRole('ADMIN', 'RECEPTION'), adminController.createAppointment);
 router.put('/appointments/:id', requireRole('ADMIN', 'RECEPTION'), adminController.updateAppointment);

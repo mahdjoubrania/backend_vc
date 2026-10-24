@@ -58,13 +58,12 @@ function moduleStatus(d) {
   return out;
 }
 
-// GET /api/inspection/verify-code/:id   (id = n° d'inspection ou de rendez-vous)
+// GET /api/inspection/verify-code/:id   (id = n° d'inspection uniquement)
 exports.staffCode = async (req, res) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'ID invalide.' });
     let [rows] = await db.query('SELECT id, status FROM inspections WHERE id = ? LIMIT 1', [id]);
-    if (!rows.length) [rows] = await db.query('SELECT id, status FROM inspections WHERE appointment_id = ? LIMIT 1', [id]);
     if (!rows.length) return res.status(404).json({ message: 'Inspection introuvable.' });
     const insp = rows[0];
     if (String(insp.status).toUpperCase() !== 'COMPLETED') {
@@ -172,4 +171,85 @@ exports.publicVerify = async (req, res) => {
   }
 };
 
-exports._internal = { moduleStatus, newCode, CODE_RE };
+// ---------------------------------------------------------------------
+// Téléchargement du rapport complet par le client (page rapport.html)
+// POST /api/public/report/:code   { phone, vin }
+// Le code (QR) seul ne suffit pas : il faut aussi le téléphone du client
+// enregistré sur le rendez-vous ET le numéro de châssis (VIN) du véhicule
+// (si un VIN est enregistré). Après 5 erreurs, le code est bloqué 30 min.
+// ---------------------------------------------------------------------
+const vinKey = (v) => String(v == null ? '' : v).toUpperCase().replace(/[^A-Z0-9]/g, '');
+const phoneKey = (v) => { const d = String(v == null ? '' : v).replace(/\D/g, ''); return d.length >= 8 ? d.slice(-9) : null; };
+const failures = new Map();          // code -> { n, until }
+const MAX_FAIL = 5, LOCK_MS = 30 * 60 * 1000;
+function isLocked(code) {
+  const f = failures.get(code);
+  if (!f) return false;
+  if (f.until && f.until > Date.now()) return true;
+  if (f.until && f.until <= Date.now()) failures.delete(code);
+  return false;
+}
+function addFailure(code) {
+  const f = failures.get(code) || { n: 0, until: 0 };
+  f.n += 1;
+  if (f.n >= MAX_FAIL) { f.until = Date.now() + LOCK_MS; f.n = 0; }
+  failures.set(code, f);
+  if (failures.size > 5000) failures.delete(failures.keys().next().value);
+}
+
+exports.publicReport = async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const code = String(req.params.code || '').toUpperCase().replace(/[\s-]/g, '');
+    if (!CODE_RE.test(code)) return res.status(400).json({ success: false, code: 'INVALID' });
+    const phone = phoneKey(req.body && req.body.phone);
+    if (!phone) return res.status(400).json({ success: false, code: 'PHONE_FORMAT' });
+    const vin = vinKey(req.body && req.body.vin);
+    if (vin.length < 6 || vin.length > 20) return res.status(400).json({ success: false, code: 'VIN_FORMAT' });
+    if (isLocked(code)) return res.status(429).json({ success: false, code: 'LOCKED' });
+    await ensureTable();
+    const [vr] = await db.query('SELECT inspection_id FROM report_verifications WHERE code = ? LIMIT 1', [code]);
+    if (!vr.length) return res.status(404).json({ success: false, code: 'NOT_FOUND' });
+    const inspectionId = vr[0].inspection_id;
+    const [[row]] = await db.query(
+      `SELECT i.status, c.phone AS client_phone, a.tlf, a.VIN AS appt_vin, v.vin_number
+       FROM inspections i
+       LEFT JOIN appointments a ON a.id = i.appointment_id
+       LEFT JOIN clients c ON c.id = a.client_id
+       LEFT JOIN vehicules v ON v.id = a.vehicle_id
+       WHERE i.id = ? LIMIT 1`, [inspectionId]);
+    if (!row) return res.status(404).json({ success: false, code: 'NOT_FOUND' });
+    const known = [phoneKey(row.client_phone), phoneKey(row.tlf)].filter(Boolean);
+    const knownVins = [vinKey(row.vin_number), vinKey(row.appt_vin)].filter((x) => x.length >= 6);
+    const phoneOk = known.includes(phone);
+    const vinOk = !knownVins.length || knownVins.includes(vin);
+    if (!phoneOk || !vinOk) {
+      addFailure(code);
+      // message unique : on ne dit pas lequel des deux est faux
+      return res.status(403).json({ success: false, code: 'MISMATCH' });
+    }
+    failures.delete(code);
+    if (String(row.status).toUpperCase() !== 'COMPLETED') return res.status(409).json({ success: false, code: 'NOT_READY' });
+
+    const report = await require('./inspection.controller').buildToleReport(inspectionId);
+    if (!report) return res.status(404).json({ success: false, code: 'NOT_FOUND' });
+    delete report.client_phone;
+    Object.keys(report).forEach((k) => { if (/_technician_id$/.test(k)) delete report[k]; });
+
+    let ai = null;
+    try {
+      const [s] = await db.query(
+        `SELECT carrosserie_summary, suspension_summary, moteur_summary, scanner_summary, conclusion_generale
+         FROM inspection_ai_summaries WHERE inspection_id = ?`, [inspectionId]);
+      ai = s.length ? s[0] : null;
+    } catch (e) { /* table absente : résumés non affichés */ }
+
+    db.query("UPDATE report_verifications SET view_count = view_count + 1, last_viewed_at = CONVERT_TZ(NOW(), '+00:00', '+01:00') WHERE inspection_id = ?", [inspectionId]).catch(() => {});
+    res.json({ success: true, code, reference: `REP-2026-${inspectionId}`, data: report, ai_summary: ai });
+  } catch (e) {
+    console.error('publicReport error:', e);
+    res.status(500).json({ success: false, code: 'SERVER' });
+  }
+};
+
+exports._internal = { moduleStatus, newCode, CODE_RE, phoneKey, vinKey, failures };
