@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const db = require('../config/db');
+const workHours = require('../config/work-hours');
 
 // ⚠️ Le serveur ne doit jamais démarrer sans un vrai secret JWT en production.
 // (Voir server.js — on ajoutera une vérification au démarrage à l'étape 5.)
@@ -47,6 +48,11 @@ async function verifyToken(req, res, next) {
   }
   if (!user || !Number(user.is_active)) {
     return res.status(401).json({ success: false, error: 'Compte désactivé ou supprimé. Veuillez vous reconnecter.' });
+  }
+
+  // fin de la journée : les sessions du personnel (hors administrateur) sont fermées
+  if (!workHours.staffAllowed(user.role)) {
+    return res.status(401).json({ success: false, code: 'OUTSIDE_HOURS', error: workHours.CLOSED_MESSAGE, message: workHours.CLOSED_MESSAGE });
   }
 
   req.user = { id, role: String(user.role || '').toUpperCase() };

@@ -87,6 +87,56 @@ function newReference() {
 const fail = (res, http, code) => res.status(http).json({ success: false, code });
 
 // =========================================================
+// Disponibilité des créneaux (1 véhicule par créneau par défaut, .env SLOT_CAPACITY=n)
+// Un créneau est occupé par : un rendez-vous (réception ou réservation acceptée) non annulé / non absent,
+// ou une réservation en ligne encore en attente de vérification du paiement.
+// Un rendez-vous pris à une heure « libre » (ex. 10:30 à la réception) occupe le créneau de son heure (10:00).
+// =========================================================
+const SLOT_CAPACITY = Math.max(1, parseInt(process.env.SLOT_CAPACITY, 10) || 1);
+async function slotLoad(conn, date) {
+  const [rows] = await conn.query(
+    `SELECT h, SUM(n) AS n FROM (
+       SELECT HOUR(appointment_date) AS h, COUNT(*) AS n FROM appointments
+        WHERE appointment_date >= ? AND appointment_date < DATE_ADD(?, INTERVAL 1 DAY)
+          AND status NOT IN ('CANCELLED', 'ABSENT')
+        GROUP BY HOUR(appointment_date)
+       UNION ALL
+       SELECT HOUR(appointment_date) AS h, COUNT(*) AS n FROM online_bookings
+        WHERE appointment_date >= ? AND appointment_date < DATE_ADD(?, INTERVAL 1 DAY)
+          AND status = 'PENDING_REVIEW'
+        GROUP BY HOUR(appointment_date)
+     ) t GROUP BY h`,
+    [date, date, date, date]
+  );
+  const load = {};
+  rows.forEach((r) => { load[String(r.h).padStart(2, '0') + ':00'] = Number(r.n) || 0; });
+  return load;
+}
+const validDate = (date) => /^\d{4}-\d{2}-\d{2}$/.test(date) && !isNaN(new Date(date + 'T12:00:00Z')) &&
+  new Date(date + 'T12:00:00Z').toISOString().slice(0, 10) === date;
+
+// GET /api/public/availability?date=YYYY-MM-DD → { slots: [{ time, available }] }
+// (aucune information sur les clients : seulement libre / complet)
+exports.availability = async (req, res) => {
+  try {
+    const date = str(req.query.date, 10);
+    if (!validDate(date)) return fail(res, 400, 'DATE');
+    const today = algiersToday();
+    const closed = date < today || date > addDays(today, MAX_DAYS_AHEAD) || !OPEN_DAYS.includes(new Date(date + 'T12:00:00Z').getUTCDay());
+    const load = closed ? {} : await slotLoad(db, date);
+    const limit = date === today ? algiersTimePlus(30) : '';
+    res.set('Cache-Control', 'no-store');
+    return res.json({
+      success: true, date,
+      slots: SLOTS.map((time) => ({ time, available: !closed && !(limit && time <= limit) && (load[time] || 0) < SLOT_CAPACITY }))
+    });
+  } catch (error) {
+    console.error('availability error:', error);
+    return fail(res, 500, 'SERVER');
+  }
+};
+
+// =========================================================
 // POST /api/public/bookings  (public)
 // Body JSON : { name, phone, vehicle, vin, plate, service_id, date, time,
 //               transaction, message, lang, receipt (data URL base64), website (piège) }
@@ -146,7 +196,16 @@ exports.createPublicBooking = async (req, res) => {
     if (dup.length) return fail(res, 409, 'TRANSACTION_USED');
 
     const conn = await db.getConnection();
+    // verrou par créneau : deux clients qui valident en même temps le même créneau → un seul passe
+    const lockName = `vc_slot_${date}_${time}`;
+    let locked = false;
     try {
+      const [[lk]] = await conn.query('SELECT GET_LOCK(?, 10) AS ok', [lockName]);
+      locked = Number(lk && lk.ok) === 1;
+      if (!locked) return fail(res, 503, 'SERVER');
+      const load = await slotLoad(conn, date);
+      if ((load[time] || 0) >= SLOT_CAPACITY) return fail(res, 409, 'SLOT_TAKEN');
+
       await conn.beginTransaction();
       let bookingId, reference;
       for (let attempt = 0; attempt < 3 && !bookingId; attempt++) {
@@ -181,6 +240,7 @@ exports.createPublicBooking = async (req, res) => {
       await conn.rollback().catch(() => {});
       throw e;
     } finally {
+      if (locked) await conn.query('SELECT RELEASE_LOCK(?)', [lockName]).catch(() => {});
       conn.release();
     }
   } catch (error) {

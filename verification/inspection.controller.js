@@ -464,6 +464,7 @@ exports.getAllInspections = async (req, res) => {
         v.make AS brand,
         v.model,
         v.license_plate AS plate,
+        v.vin_number AS vin,
         u.full_name AS technician_name
       FROM inspections i
       LEFT JOIN appointments a ON i.appointment_id = a.id
@@ -1142,5 +1143,107 @@ exports.adminGetReportHistory = async (req, res) => {
     if (err && err.code === 'ER_NO_SUCH_TABLE') return res.json({ success: true, data: [], notice: 'history_table_missing' });
     console.error('❌ adminGetReportHistory:', err);
     res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
+  }
+};
+
+
+// ===== Annotations des 5 photos (Tôle & Carrosserie) : correction par l'administrateur =====
+const DRAWING_COUNT = 5;
+const DRAWING_MAX_CHARS = 3 * 1024 * 1024;     // ≈ 2,2 Mo par image (une vue JPEG fait ≈ 60 Ko)
+const DRAWING_RE = /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/;
+
+function parseExt(raw) {
+  if (!raw) return {};
+  if (typeof raw === 'object') return raw;
+  try { const v = JSON.parse(raw); return v && typeof v === 'object' ? v : {}; } catch (_) { return {}; }
+}
+
+exports.adminGetDrawings = async (req, res) => {
+  const id = parseInspectionId(req.params.id);
+  if (!id) return res.status(400).json({ success: false, error: 'Identifiant de rapport invalide.' });
+  try {
+    const [insp] = await db.query('SELECT id FROM inspections WHERE id = ? LIMIT 1', [id]);
+    if (insp.length === 0) return res.status(404).json({ success: false, error: 'Rapport introuvable.' });
+    const [rows] = await db.query('SELECT elements_ext_json FROM inspection_tole WHERE inspection_id = ? LIMIT 1', [id]);
+    const ext = rows.length ? parseExt(rows[0].elements_ext_json) : {};
+    const src = (ext && ext.drawings) || {};
+    const drawings = {};
+    for (let i = 0; i < DRAWING_COUNT; i++) {
+      const v = src[i] ?? src[String(i)];
+      if (typeof v === 'string' && DRAWING_RE.test(v)) drawings[i] = v;
+    }
+    res.json({ success: true, data: { exists: rows.length > 0, drawings } });
+  } catch (err) {
+    console.error('❌ adminGetDrawings:', err);
+    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
+  }
+};
+
+// Corps : { drawings: { "0": "data:image/jpeg;base64,…" | null, … } } — seules les vues envoyées changent
+exports.adminUpdateDrawings = async (req, res) => {
+  const id = parseInspectionId(req.params.id);
+  if (!id) return res.status(400).json({ success: false, error: 'Identifiant de rapport invalide.' });
+  const input = req.body && req.body.drawings;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return res.status(400).json({ success: false, error: 'Données invalides.' });
+  }
+  const updates = {};
+  for (const [k, v] of Object.entries(input)) {
+    if (!/^[0-4]$/.test(k)) return res.status(400).json({ success: false, error: `Vue inconnue : ${k}` });
+    if (v === null) { updates[k] = null; continue; }
+    if (typeof v !== 'string' || !DRAWING_RE.test(v)) return res.status(400).json({ success: false, error: 'Image invalide.' });
+    if (v.length > DRAWING_MAX_CHARS) return res.status(400).json({ success: false, error: 'Image trop volumineuse.' });
+    updates[k] = v;
+  }
+  if (Object.keys(updates).length === 0) return res.json({ success: true, changed: false, message: 'Aucune modification.' });
+
+  let conn;
+  try {
+    conn = await db.getConnection();
+    await conn.beginTransaction();
+    const [insp] = await conn.query('SELECT id FROM inspections WHERE id = ? FOR UPDATE', [id]);
+    if (insp.length === 0) throw new HttpError(404, 'Rapport introuvable.');
+
+    const [rows] = await conn.query('SELECT elements_ext_json FROM inspection_tole WHERE inspection_id = ? LIMIT 1', [id]);
+    const ext = rows.length ? parseExt(rows[0].elements_ext_json) : {};
+    const drawings = { ...((ext && ext.drawings) || {}) };
+    const changed = [];
+    for (const [k, v] of Object.entries(updates)) {
+      const before = drawings[k] ?? drawings[Number(k)] ?? null;
+      if (before === v) continue;
+      delete drawings[Number(k)];
+      if (v === null) delete drawings[k]; else drawings[k] = v;
+      changed.push(Number(k));
+    }
+    if (changed.length === 0) {
+      await conn.rollback();
+      return res.json({ success: true, changed: false, message: 'Aucune modification détectée.' });
+    }
+    const json = JSON.stringify({ ...ext, drawings });
+    if (rows.length) {
+      await conn.query('UPDATE inspection_tole SET elements_ext_json = ? WHERE inspection_id = ?', [json, id]);
+    } else {
+      // section jamais remplie : créée avec les valeurs par défaut, sans technicien
+      await conn.query('INSERT INTO inspection_tole (inspection_id, elements_ext_json) VALUES (?, ?)', [id, json]);
+    }
+    const VIEW = ['Face avant', 'Face arrière', 'Côté droit', 'Côté gauche', 'Vue de dessus'];
+    const log = { tole: { annotations: ['—', changed.sort().map((i) => VIEW[i]).join(', ') + ' (modifié)'] } };
+    if (!rows.length) log._created = ['tole'];
+    await conn.query(
+      'INSERT INTO inspection_edit_log (inspection_id, admin_id, sections, changes) VALUES (?, ?, ?, ?)',
+      [id, req.user.id, 'tole', JSON.stringify(log)]
+    );
+    await conn.commit();
+    res.json({ success: true, changed: true, views: changed, message: 'Annotations enregistrées.' });
+  } catch (err) {
+    if (conn) { try { await conn.rollback(); } catch (_) { /* ignore */ } }
+    if (err instanceof HttpError) return res.status(err.status).json({ success: false, error: err.message });
+    console.error('❌ adminUpdateDrawings:', err);
+    if (err && err.code === 'ER_NO_SUCH_TABLE') {
+      return res.status(500).json({ success: false, error: "Configuration incomplète : la table de l'historique des modifications est absente." });
+    }
+    res.status(500).json({ success: false, error: 'Erreur serveur. Veuillez réessayer plus tard.' });
+  } finally {
+    if (conn) conn.release();
   }
 };

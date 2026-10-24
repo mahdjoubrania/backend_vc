@@ -2,6 +2,7 @@
 const db = require('../config/db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const workHours = require('../config/work-hours');
 
 // hachage factice : bcrypt est exécuté même pour un numéro inconnu
 const DUMMY_HASH = bcrypt.hashSync('verifcar-dummy-password', 10);
@@ -42,6 +43,11 @@ exports.login = async (req, res) => {
       return res.status(403).json({
         message: 'Ce compte est désactivé.'
       });
+    }
+
+    // en dehors des horaires de l'atelier : seul l'administrateur peut se connecter
+    if (!workHours.staffAllowed(user.role)) {
+      return res.status(403).json({ code: 'OUTSIDE_HOURS', message: workHours.CLOSED_MESSAGE });
     }
 
     delete user.password_hash;

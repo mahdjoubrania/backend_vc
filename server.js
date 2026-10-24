@@ -88,6 +88,9 @@ require('./config/migrations').run();
 // Avis Google : actualisation automatique (si GOOGLE_PLACES_API_KEY + GOOGLE_PLACE_ID sont configurés)
 require('./reviews/google-places').start();
 
+// Horaires du personnel (08:45-17:10) + clôture automatique des véhicules du jour
+require('./config/work-hours').start();
+
 const PORT = process.env.PORT || 8080;
 // HOST=127.0.0.1 sur le VPS (accessible uniquement via Nginx) ; 0.0.0.0 par défaut (Railway, local)
 const HOST = process.env.HOST || '0.0.0.0';

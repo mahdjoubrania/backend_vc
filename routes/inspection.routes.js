@@ -37,5 +37,7 @@ const adminOnly = requireRole('ADMIN');
 router.get('/admin/:id', adminOnly, inspectionCtrl.adminGetReportForEdit);
 router.put('/admin/:id', adminOnly, inspectionCtrl.adminUpdateReport);
 router.get('/admin/:id/history', adminOnly, inspectionCtrl.adminGetReportHistory);
+router.get('/admin/:id/drawings', adminOnly, inspectionCtrl.adminGetDrawings);
+router.put('/admin/:id/drawings', adminOnly, inspectionCtrl.adminUpdateDrawings);
 
 module.exports = router;

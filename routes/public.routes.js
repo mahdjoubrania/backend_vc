@@ -33,6 +33,9 @@ router.post(
 // Catalogue public (prix + promotions en cours) et devis (avec fidélité si le téléphone est connu)
 const quoteLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 40, message: { success: false, code: 'RATE_LIMIT' } });
 router.get('/services', pricingController.publicServices);
+// Créneaux libres / complets d'une journée (aucune donnée client) — 120 / 15 min / IP
+const availabilityLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 120, message: { success: false, code: 'RATE_LIMIT' } });
+router.get('/availability', availabilityLimiter, bookingController.availability);
 router.post('/quote', quoteLimiter, express.json({ limit: '2kb' }), pricingController.publicQuote);
 
 // Suivi d'une demande (référence + téléphone) — 20 essais / 15 min / IP contre la devinette
@@ -52,6 +55,12 @@ const reviews = require('../reviews/reviews.controller');
 const clickLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, message: { success: false, code: 'RATE_LIMIT' } });
 router.get('/google-reviews', reviews.publicGoogle);
 router.post('/review-click', clickLimiter, express.json({ limit: '1kb' }), reviews.publicClick);
+
+// Rapports de sécurité CSP envoyés automatiquement par les navigateurs (aucune donnée client)
+const cspLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: { success: false, code: 'RATE_LIMIT' } });
+router.post('/csp-report', cspLimiter,
+  express.json({ limit: '16kb', type: ['application/csp-report', 'application/reports+json', 'application/json'] }),
+  require('../security/csp-report'));
 
 // Corps trop gros / JSON invalide → réponse propre (sans détails internes)
 router.use((err, req, res, next) => {

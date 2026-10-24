@@ -1,7 +1,7 @@
 // =========================================================
 // Limiteur de requêtes intégré (mémoire, un seul processus PM2) — sans dépendance externe.
 // API compatible avec l'usage précédent d'express-rate-limit :
-//   rateLimit({ windowMs, max | limit, message, keyGenerator, skipFailedRequests })
+//   rateLimit({ windowMs, max | limit, message, keyGenerator, skipFailedRequests, skipSuccessfulRequests })
 // IPv6 : les adresses sont regroupées par /64 (un abonné ne peut pas contourner la limite
 // en changeant d'adresse dans son propre préfixe).
 // =========================================================
@@ -27,6 +27,7 @@ function rateLimit(opts = {}) {
   const message = opts.message || { success: false, code: 'RATE_LIMIT' };
   const keyGen = opts.keyGenerator || ((req) => ipKey(req.ip));
   const skipFailed = !!opts.skipFailedRequests;
+  const skipOk = !!opts.skipSuccessfulRequests;
   const hits = new Map();   // key -> { count, reset }
 
   const sweep = setInterval(() => {
@@ -52,10 +53,11 @@ function rateLimit(opts = {}) {
       res.setHeader('Retry-After', String(resetSec));
       return res.status(429).json(message);
     }
-    if (skipFailed) {
-      // les erreurs de saisie (4xx/5xx) ne consomment pas le quota des clients honnêtes
+    if (skipFailed || skipOk) {
+      // skipFailed : les erreurs de saisie ne consomment pas le quota des clients honnêtes
+      // skipOk     : seules les tentatives échouées comptent (ex. connexion du personnel depuis la même IP)
       res.on('finish', () => {
-        if (res.statusCode >= 400) {
+        if ((skipFailed && res.statusCode >= 400) || (skipOk && res.statusCode < 400)) {
           const e = hits.get(key);
           if (e && e === entry && e.count > 0) e.count -= 1;
         }
